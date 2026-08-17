@@ -1,0 +1,10 @@
+.env
+.data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Model weights are large binaries — keep them out of git.
+models/*.pth
+gfpgan/weights/*.pth

@@ -1,0 +1,27 @@
+# Beautify — one Python backend (API + web UI + AI inference in a single process).
+#
+# torch: install the build that matches your machine FIRST, then this file.
+#   CPU-only : pip install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.1: pip install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
+
+# --- web ---
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32
+pydantic==2.13.4
+pydantic-settings==2.14.2
+
+# --- imaging ---
+numpy==1.26.4          # 2.x breaks basicsr
+opencv-python==4.11.0.86
+pillow==12.3.0
+
+# --- models ---
+# basicsr 1.4.2 imports torchvision.transforms.functional_tensor, which torchvision >= 0.17
+# removed; app/pipeline/registry.py installs a shim for it at load time.
+torch==2.2.2
+torchvision==0.17.2
+basicsr==1.4.2
+facexlib==0.3.0
+realesrgan==0.3.0
+gfpgan==1.3.8
