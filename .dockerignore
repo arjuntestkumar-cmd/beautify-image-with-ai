@@ -1,0 +1,15 @@
+# Weights are downloaded during the build, never copied from the host.
+models/*.pth
+gfpgan/weights/*.pth
+
+# Runtime scratch — must not be baked into the image.
+.data/
+
+.git/
+.gitignore
+.env
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+venv/

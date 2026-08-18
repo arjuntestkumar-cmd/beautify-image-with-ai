@@ -490,7 +490,18 @@ def beautify(
     started = time.perf_counter()
     timer = _Timer()
     report: ProgressFn = progress or (lambda *_: None)
-    is_mock = settings.MOCK_MODE or not registry.status.ready
+    # MOCK_MODE is an explicit developer opt-in, and the ONLY way to get the resize path.
+    #
+    # Missing models used to fall through to it silently. That is how a deployment with no
+    # weights on disk kept accepting photos, showing progress and reporting success while
+    # returning nothing but a Lanczos upscale - the user is told their photo was enhanced when
+    # it was not. Refusing the job is the honest outcome, and the failure is loud and specific.
+    is_mock = settings.MOCK_MODE
+    if not is_mock and not registry.status.ready:
+        raise ModelsUnavailable(
+            "The AI engine is not available on this server, so the photo was not changed. "
+            "The enhancement models are not loaded."
+        )
     models: List[str] = []
     warnings: List[str] = []
     processed_faces = 0

@@ -23,7 +23,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ROOT, get_settings
-from .errors import AppError, CorruptedImage, FileTooLarge, UnsupportedImageFormat
+from .errors import (AppError, CorruptedImage, FileTooLarge, ModelsUnavailable,
+                     UnsupportedImageFormat)
 from .jobs import Job, JobStore
 from .logging_utils import configure, get_logger
 from .pipeline.beautify import MODES, beautify
@@ -113,6 +114,13 @@ def _work(job: Job) -> None:
 
 @app.post("/api/enhance", status_code=202)
 async def enhance(image: UploadFile = File(...), mode: str = Form("beautify")) -> JSONResponse:
+    # Refuse up front rather than queueing work that cannot produce a real result.
+    if not settings.MOCK_MODE and not registry.status.ready:
+        raise ModelsUnavailable(
+            "The AI engine is not available on this server. Enhancement models are not loaded, "
+            "so no photo can be processed."
+        )
+
     # Land the upload on disk under a temporary name and fully validate it BEFORE a job exists,
     # so a rejected file never leaves a phantom job behind.
     upload_path = os.path.join(settings.DATA_DIRECTORY, f"upload-{uuid.uuid4().hex}")

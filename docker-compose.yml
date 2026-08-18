@@ -1,0 +1,36 @@
+# Beautify — single-host deployment.
+#
+#   docker compose up -d --build     start (first build downloads ~528 MB of weights)
+#   docker compose logs -f           watch it load the models
+#   docker compose down              stop
+#
+# The container listens on 7860 and is published on port 80. Put Caddy or nginx
+# in front of it if you want HTTPS on a domain — see deploy/ORACLE.md.
+
+services:
+  beautify:
+    build: .
+    image: beautify:latest
+    container_name: beautify
+    restart: unless-stopped
+    ports:
+      - "80:7860"
+    environment:
+      PORT: "7860"
+      # Uncomment to tune. Every value has a working default.
+      # AUTO_UPSCALE_MAX_SIDE: "1600"    # lower = faster on big photos
+      # RESULT_RETENTION_MINUTES: "30"   # how long a result survives
+      # MAX_UPLOAD_BYTES: "20971520"     # 20 MB
+      # JOB_TIMEOUT_SECONDS: "900"
+
+    # Loading the models takes a while on a cold start, so the health check is
+    # given a long grace period before its first failure counts.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/health',timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 240s
+      retries: 3
+
+    # Uploads and results are scratch: they are deleted 30 minutes after each job
+    # and wiped on every restart, so they deliberately stay inside the container.
