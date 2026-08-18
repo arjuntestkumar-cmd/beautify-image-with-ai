@@ -4,123 +4,607 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Beautify — AI Image Enhancer</title>
-<meta name="description" content="Upload a photo and get a beautified version back." />
+<meta name="description" content="Upload a photo and get a genuinely better version back. Face restoration, detail recovery, grain removal and exposure rescue — processed locally." />
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-<div class="page">
 
-  <header class="head">
-    <div class="brand">
-      <span class="dot" aria-hidden="true"></span>
+<!-- ============================================================ HEADER -->
+<header class="site-header" id="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="#top" aria-label="Beautify home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l2.1 5.3 5.3 2.1-5.3 2.1L12 17.4l-2.1-5.3L4.6 10l5.3-2.1z" fill="currentColor"/><circle cx="18.5" cy="17.5" r="2" fill="currentColor" opacity=".7"/></svg>
+      </span>
       <span class="brand-name">Beautify</span>
-    </div>
-    <div class="status" id="service-status" title="Service status">
-      <span class="pill" id="status-pill">checking…</span>
-    </div>
-  </header>
+    </a>
 
-  <main>
-    <!-- ── 1. pick a photo ───────────────────────────────────────────── -->
-    <section class="panel" id="view-idle">
-      <h1>Make any photo look better</h1>
-      <p class="sub">One click. Faces, detail, tone and colour — all handled automatically.</p>
+    <nav class="site-nav" id="site-nav" aria-label="Primary">
+      <a href="#workspace" class="nav-link">Enhance</a>
+      <a href="#features" class="nav-link">Features</a>
+      <a href="#how" class="nav-link">How It Works</a>
+      <a href="#privacy" class="nav-link">Privacy</a>
+      <a href="#faq" class="nav-link">FAQ</a>
+    </nav>
 
-      <div class="drop" id="drop" tabindex="0" role="button"
-           aria-label="Choose a photo, or drop one here">
-        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 16V4m0 0L8 8m4-4 4 4" />
-          <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+    <div class="header-actions">
+      <!-- app.js sets textContent AND replaces className on #status-pill: no extra classes here -->
+      <div class="status" id="service-status" title="AI engine status">
+        <span class="pill" id="status-pill">checking…</span>
+      </div>
+      <a href="#workspace" class="btn btn-primary btn-sm header-cta">Enhance Photo</a>
+      <button class="nav-toggle" id="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="site-nav">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ============================================================ HERO -->
+<section class="hero">
+  <div class="hero-bg" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+    <span class="grid"></span>
+  </div>
+
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow reveal" data-reveal>
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        AI-POWERED PHOTO ENHANCEMENT
+      </p>
+
+      <h1 class="hero-title reveal" data-reveal data-delay="1">
+        <span class="line">Make every photo</span>
+        <span class="line"><em>look extraordinary.</em></span>
+      </h1>
+
+      <p class="hero-sub reveal" data-reveal data-delay="2">
+        Restore faces, recover detail, clear grain and rescue exposure — intelligent
+        enhancement tuned for natural, high-quality results. One click, nothing to configure.
+      </p>
+
+      <div class="hero-cta reveal" data-reveal data-delay="3">
+        <a href="#workspace" class="btn btn-primary btn-lg">Enhance a Photo</a>
+        <a href="#how" class="btn btn-secondary btn-lg">How It Works</a>
+      </div>
+
+      <ul class="hero-points reveal" data-reveal data-delay="4">
+        <li>Runs on your machine</li>
+        <li>No account needed</li>
+        <li>Auto-deleted after 30 min</li>
+      </ul>
+    </div>
+
+    <!-- ==================================================== WORKSPACE -->
+    <div class="workspace-wrap reveal-scale" id="workspace" data-reveal>
+      <div class="workspace">
+        <div class="ws-head">
+          <div>
+            <h2 class="ws-title">Enhance your photo</h2>
+            <p class="ws-sub">AI-powered image improvement</p>
+          </div>
+          <span class="ws-badge" aria-hidden="true">AI</span>
+        </div>
+
+        <!-- ---------- 1. idle ---------- -->
+        <section class="panel" id="view-idle">
+          <div class="drop" id="drop" tabindex="0" role="button"
+               aria-label="Choose a photo, or drop one here">
+            <span class="drop-glow" aria-hidden="true"></span>
+            <span class="drop-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 16V4m0 0L8 8m4-4 4 4" />
+                <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+              </svg>
+            </span>
+            <p class="drop-title">Drop an image here</p>
+            <p class="drop-sub">or <span class="link">browse from your device</span></p>
+            <p class="drop-hint">You can also paste with <kbd>Ctrl</kbd> + <kbd>V</kbd></p>
+            <p class="drop-meta">JPG &middot; PNG &middot; WebP &middot; up to <span id="max-mb">20</span> MB</p>
+            <input type="file" id="file" accept="image/jpeg,image/png,image/webp" hidden />
+          </div>
+        </section>
+
+        <!-- ---------- 2. selected ---------- -->
+        <section class="panel hidden" id="view-selected">
+          <div class="preview-wrap">
+            <img id="preview" alt="The photo you selected" />
+          </div>
+          <div class="file-row">
+            <div class="file-info">
+              <span class="file-name" id="file-name">photo.jpg</span>
+              <span class="file-meta" id="file-meta">&mdash;</span>
+            </div>
+          </div>
+
+          <fieldset class="modes">
+            <legend class="modes-legend">What should it do?</legend>
+            <label class="mode">
+              <input type="radio" name="mode" value="beautify" checked />
+              <span class="mode-body">
+                <span class="mode-name">Beautify</span>
+                <span class="mode-desc">Clean it up, even out the skin, lift the colour and tone.</span>
+              </span>
+            </label>
+            <label class="mode">
+              <input type="radio" name="mode" value="clear" />
+              <span class="mode-body">
+                <span class="mode-name">Clear only</span>
+                <span class="mode-desc">Sharpen and remove grain, nothing else. Stays true to the original.</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <div class="actions">
+            <button class="btn btn-secondary" id="btn-change">Change</button>
+            <!-- app.js overwrites this button's textContent: text-only, icon via CSS ::before -->
+            <button class="btn btn-primary btn-sparkle" id="btn-enhance">Beautify</button>
+          </div>
+        </section>
+
+        <!-- ---------- 3. processing ---------- -->
+        <section class="panel hidden" id="view-processing">
+          <div class="preview-wrap dim">
+            <img id="processing-preview" alt="" />
+            <span class="scanline" aria-hidden="true"></span>
+          </div>
+          <div class="progress-block">
+            <div class="progress-head">
+              <span class="stage" id="stage-text">Starting…</span>
+              <span id="progress-pct">0%</span>
+            </div>
+            <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="bar-outer">
+              <div class="bar-fill" id="bar"></div>
+            </div>
+            <p class="hint" id="progress-hint">Working on your photo…</p>
+          </div>
+        </section>
+
+        <!-- ---------- 4. done ---------- -->
+        <section class="panel hidden" id="view-done">
+          <div class="done-head">
+            <span class="done-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                   stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+            </span>
+            <span>Enhancement complete</span>
+          </div>
+
+          <div class="compare" id="compare">
+            <img class="cmp-img" id="img-before" alt="Before" draggable="false" />
+            <div class="cmp-after" id="cmp-after">
+              <img class="cmp-img" id="img-after" alt="After" draggable="false" />
+            </div>
+            <div class="handle" id="handle" role="slider" tabindex="0"
+                 aria-label="Compare before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+              <span class="handle-line"></span>
+              <span class="handle-grip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="m9 6-4 6 4 6M15 6l4 6-4 6"/></svg>
+              </span>
+            </div>
+            <span class="cmp-label left">Before</span>
+            <span class="cmp-label right">After</span>
+          </div>
+
+          <!-- app.js fills this with <span class="stat"> chips -->
+          <div class="stats" id="stats"></div>
+
+          <div class="actions end">
+            <button class="btn btn-secondary" id="btn-again">Enhance another</button>
+            <a class="btn btn-primary" id="btn-download" download>Download</a>
+          </div>
+        </section>
+
+        <!-- ---------- error ---------- -->
+        <section class="panel hidden" id="view-error">
+          <div class="error-box">
+            <span class="error-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.01"/></svg>
+            </span>
+            <h3 id="error-title">That didn't work</h3>
+            <p id="error-message">Something went wrong.</p>
+            <button class="btn btn-primary" id="btn-retry">Try again</button>
+          </div>
+        </section>
+      </div>
+
+      <p class="ws-foot">Your photo never leaves this machine.</p>
+    </div>
+  </div>
+
+  <div class="scroll-cue" aria-hidden="true"><span></span></div>
+</section>
+
+<!-- ============================================================ TRUST -->
+<section class="trust">
+  <div class="container trust-grid">
+    <div class="trust-item reveal" data-reveal>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z"/></svg>
+      <div><strong>Local processing</strong><span>Nothing is uploaded anywhere</span></div>
+    </div>
+    <div class="trust-item reveal" data-reveal data-delay="1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      <div><strong>Auto-deleted</strong><span>Removed after 30 minutes</span></div>
+    </div>
+    <div class="trust-item reveal" data-reveal data-delay="2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+      <div><strong>No account</strong><span>Open it and use it</span></div>
+    </div>
+    <div class="trust-item reveal" data-reveal data-delay="3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>
+      <div><strong>On-device AI</strong><span>Works without the internet</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ SHOWCASE -->
+<section class="section showcase" id="showcase">
+  <div class="container">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>THE DIFFERENCE</p>
+      <h2 class="reveal" data-reveal data-delay="1">See what the AI actually changes</h2>
+      <p class="lede reveal" data-reveal data-delay="2">
+        Drag the divider. This is an illustration of the pipeline's stages — your own
+        before and after appears in the workspace once you enhance a photo.
+      </p>
+    </div>
+
+    <div class="demo-wrap reveal-scale" data-reveal>
+      <div class="demo" id="demo" role="group" aria-label="Illustrative before and after comparison">
+        <svg class="demo-svg" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <filter id="degrade">
+              <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" result="n"/>
+              <feColorMatrix in="n" type="saturate" values="0" result="g"/>
+              <feBlend in="SourceGraphic" in2="g" mode="overlay"/>
+              <feGaussianBlur stdDeviation="3"/>
+            </filter>
+            <linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#93a4c4"/><stop offset="1" stop-color="#c6c0b6"/>
+            </linearGradient>
+          </defs>
+          <rect width="800" height="420" fill="url(#sky1)"/>
+          <g filter="url(#degrade)">
+            <circle cx="400" cy="190" r="118" fill="#d3b49a"/>
+            <ellipse cx="400" cy="380" rx="215" ry="115" fill="#7b6a84"/>
+            <circle cx="357" cy="172" r="14" fill="#332e37"/><circle cx="443" cy="172" r="14" fill="#332e37"/>
+            <path d="M362 244q38 30 76 0" stroke="#8d5b58" stroke-width="12" fill="none" stroke-linecap="round"/>
+          </g>
         </svg>
-        <p class="drop-title">Drop a photo here</p>
-        <p class="drop-sub">or <span class="link">browse</span> · paste with Ctrl&nbsp;+&nbsp;V</p>
-        <p class="drop-meta">JPG, PNG or WebP · up to <span id="max-mb">20</span> MB</p>
-        <input type="file" id="file" accept="image/jpeg,image/png,image/webp" hidden />
-      </div>
-    </section>
 
-    <!-- ── 2. confirm ────────────────────────────────────────────────── -->
-    <section class="panel hidden" id="view-selected">
-      <div class="preview-wrap">
-        <img id="preview" alt="The photo you selected" />
-      </div>
-      <div class="file-row">
-        <div class="file-info">
-          <span class="file-name" id="file-name">photo.jpg</span>
-          <span class="file-meta" id="file-meta">—</span>
+        <div class="demo-after" id="demo-after">
+          <svg class="demo-svg" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+            <defs>
+              <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#7ea9ea"/><stop offset="1" stop-color="#f5e9de"/>
+              </linearGradient>
+              <radialGradient id="skin2" cx="45%" cy="35%">
+                <stop offset="0" stop-color="#ffdec3"/><stop offset="1" stop-color="#e7ae85"/>
+              </radialGradient>
+            </defs>
+            <rect width="800" height="420" fill="url(#sky2)"/>
+            <circle cx="400" cy="190" r="118" fill="url(#skin2)"/>
+            <ellipse cx="400" cy="380" rx="215" ry="115" fill="#6d4fa8"/>
+            <circle cx="357" cy="172" r="14" fill="#1b1622"/><circle cx="443" cy="172" r="14" fill="#1b1622"/>
+            <circle cx="362" cy="167" r="4.5" fill="#fff" opacity=".95"/><circle cx="448" cy="167" r="4.5" fill="#fff" opacity=".95"/>
+            <path d="M362 244q38 32 76 0" stroke="#c0504d" stroke-width="12" fill="none" stroke-linecap="round"/>
+            <path d="M328 132q72 -34 144 0" stroke="#3a2f45" stroke-width="9" fill="none" stroke-linecap="round"/>
+          </svg>
         </div>
-        <div class="actions">
-          <button class="btn ghost" id="btn-change">Change</button>
-          <button class="btn primary" id="btn-enhance">Beautify</button>
-        </div>
-      </div>
-    </section>
 
-    <!-- ── 3. working ────────────────────────────────────────────────── -->
-    <section class="panel hidden" id="view-processing">
-      <div class="preview-wrap dim">
-        <img id="processing-preview" alt="" />
-        <div class="shimmer" aria-hidden="true"></div>
-      </div>
-      <div class="progress-block">
-        <div class="progress-head">
-          <span id="stage-text">Starting…</span>
-          <span id="progress-pct">0%</span>
-        </div>
-        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="bar-outer">
-          <div class="bar-fill" id="bar"></div>
-        </div>
-        <p class="hint" id="progress-hint">Working on your photo…</p>
-      </div>
-    </section>
-
-    <!-- ── 4. result ─────────────────────────────────────────────────── -->
-    <section class="panel hidden" id="view-done">
-      <div class="compare" id="compare">
-        <img class="cmp-img" id="img-before" alt="Before" draggable="false" />
-        <div class="cmp-after" id="cmp-after">
-          <img class="cmp-img" id="img-after" alt="After" draggable="false" />
-        </div>
-        <div class="handle" id="handle" role="slider" tabindex="0"
-             aria-label="Compare before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+        <div class="demo-handle" id="demo-handle" role="slider" tabindex="0"
+             aria-label="Comparison position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
           <span class="handle-line"></span>
           <span class="handle-grip">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6-4 6 4 6M15 6l4 6-4 6"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6-4 6 4 6M15 6l4 6-4 6"/></svg>
           </span>
         </div>
         <span class="cmp-label left">Before</span>
         <span class="cmp-label right">After</span>
       </div>
 
-      <div class="stats" id="stats"></div>
+      <ul class="demo-tags">
+        <li>Sharper detail</li><li>Grain removed</li><li>Balanced tone</li><li>Restored faces</li>
+      </ul>
+    </div>
+  </div>
+</section>
 
-      <div class="actions end">
-        <button class="btn ghost" id="btn-again">Enhance another</button>
-        <a class="btn primary" id="btn-download" download>Download</a>
+<!-- ============================================================ FEATURES -->
+<section class="section features" id="features">
+  <div class="container">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>CAPABILITIES</p>
+      <h2 class="reveal" data-reveal data-delay="1">Everything your photo needs</h2>
+      <p class="lede reveal" data-reveal data-delay="2">
+        Each stage decides for itself whether your photo needs it, and how much.
+        There is nothing to configure.
+      </p>
+    </div>
+
+    <div class="cards">
+      <article class="card reveal" data-reveal data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="4"/><path d="M5.5 20a7 7 0 0 1 13 0"/></svg></span>
+        <h3>Face restoration</h3>
+        <p>The face model rebuilds eyes, lashes, brows and lips, then your photo's own skin
+           texture is re-injected so the result reads as restored, not repainted.</p>
+      </article>
+      <article class="card reveal" data-reveal data-delay="1" data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M4 16 9 9l4 5 3-3 4 5"/></svg></span>
+        <h3>Detail recovery</h3>
+        <p>The enhancement model reconstructs structure, with a 2× upscale for smaller photos.
+           Sharpening follows real edges, so texture returns without halos.</p>
+      </article>
+      <article class="card reveal" data-reveal data-delay="2" data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7a5 5 0 1 0 5 5"/></svg></span>
+        <h3>Grain &amp; noise removal</h3>
+        <p>Denoising that protects structure — flat skin is cleaned in full while a hair strand
+           keeps itself — plus a dedicated pass for colour blotching.</p>
+      </article>
+      <article class="card reveal" data-reveal data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span>
+        <h3>Exposure rescue</h3>
+        <p>An under-exposed photo is lifted, its black point reset and its colour recovered
+           before anything else runs — then re-measured, because dark frames mislead.</p>
+      </article>
+      <article class="card reveal" data-reveal data-delay="1" data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6l2.1 5.3 5.3 2.1-5.3 2.1L12 17.4l-2.1-5.3L4.6 10l5.3-2.1z"/></svg></span>
+        <h3>Skin refinement</h3>
+        <p>Beautify mode evens out skin under a face-and-skin mask, capped so roughly a third of
+           real skin always survives. That is the line between clear and plastic.</p>
+      </article>
+      <article class="card reveal" data-reveal data-delay="2" data-tilt>
+        <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3"/><rect x="8.5" y="8.5" width="7" height="7" rx="1"/></svg></span>
+        <h3>Clarity everywhere</h3>
+        <p>Hands, clothing and objects get their own clarity pass, so nothing is left a smear
+           next to a finely restored face.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ MODES -->
+<section class="section modes-section">
+  <div class="container">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>TWO MODES</p>
+      <h2 class="reveal" data-reveal data-delay="1">Flattering, or faithful</h2>
+      <p class="lede reveal" data-reveal data-delay="2">
+        Both run identical restoration. They differ only in what happens to skin and colour afterwards.
+      </p>
+    </div>
+
+    <div class="mode-compare">
+      <article class="mode-card reveal-left" data-reveal>
+        <h3>Beautify <span class="tag">Default</span></h3>
+        <p>Everything on the right, plus evened-out skin, a soft highlight glow and a full tone
+           and colour grade.</p>
+        <ul class="ticks">
+          <li>Restore, denoise, sharpen</li><li>Face &amp; eye clarity</li>
+          <li>Skin evened out</li><li>Glow, tone curve, vibrance</li>
+        </ul>
+      </article>
+      <article class="mode-card reveal-right" data-reveal>
+        <h3>Clear only</h3>
+        <p>The same restoration with none of the flattery — for when a photo should stay exactly
+           itself, only cleaner.</p>
+        <ul class="ticks">
+          <li>Restore, denoise, sharpen</li><li>Face &amp; eye clarity</li>
+          <li class="off">No skin smoothing</li><li class="off">No colour grading</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ HOW -->
+<section class="section how" id="how">
+  <div class="container">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>HOW IT WORKS</p>
+      <h2 class="reveal" data-reveal data-delay="1">Three steps, no settings</h2>
+    </div>
+
+    <ol class="steps" id="steps">
+      <span class="steps-line" aria-hidden="true"><i></i></span>
+      <li class="step reveal" data-reveal>
+        <span class="step-num">01</span>
+        <h3>Upload</h3>
+        <p>Drop a photo, browse for it, or paste from your clipboard.</p>
+      </li>
+      <li class="step reveal" data-reveal data-delay="1">
+        <span class="step-num">02</span>
+        <h3>Enhance</h3>
+        <p>The photo is measured, then each stage runs only if it is actually needed.</p>
+      </li>
+      <li class="step reveal" data-reveal data-delay="2">
+        <span class="step-num">03</span>
+        <h3>Download</h3>
+        <p>Compare before and after with the slider, then save the result.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============================================================ TECH (dark) -->
+<section class="section tech" id="tech">
+  <div class="tech-bg" aria-hidden="true"><span class="tech-glow"></span><span class="tech-grid"></span></div>
+  <div class="container tech-wrap">
+    <div class="tech-copy">
+      <p class="kicker reveal" data-reveal>THE ENGINE</p>
+      <h2 class="reveal" data-reveal data-delay="1">Adaptive by design</h2>
+      <p class="lede reveal" data-reveal data-delay="2">
+        There is one mode, but not one recipe. Every photo is measured first — blur, grain,
+        compression, exposure, faces — and the plan is built from what is actually wrong with it.
+      </p>
+      <ul class="tech-list">
+        <li class="reveal" data-reveal data-delay="3"><strong>Detail reconstruction</strong> rebuilds structure, with denoising blended into the model itself, tuned per photo.</li>
+        <li class="reveal" data-reveal data-delay="4"><strong>Face restoration</strong> rebuilds faces and blends them back through a face-parsing mask — no seams, no ghost faces.</li>
+        <li class="reveal" data-reveal data-delay="5"><strong>Classical imaging</strong> handles exposure, denoising, clarity and tone, all bounded so no combination can break an image.</li>
+      </ul>
+    </div>
+
+    <div class="tech-visual reveal-scale" data-reveal aria-hidden="true">
+      <div class="orbit">
+        <span class="core"></span>
+        <span class="ring ring-1"></span><span class="ring ring-2"></span><span class="ring ring-3"></span>
+        <span class="node n1"></span><span class="node n2"></span><span class="node n3"></span>
+        <span class="node n4"></span><span class="node n5"></span>
       </div>
-    </section>
+    </div>
+  </div>
+</section>
 
-    <!-- ── error ─────────────────────────────────────────────────────── -->
-    <section class="panel hidden" id="view-error">
-      <div class="error-box">
-        <svg class="error-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 16.5v.01" />
+<!-- ============================================================ USE CASES -->
+<section class="section usecases">
+  <div class="container">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>WORKS WELL WITH</p>
+      <h2 class="reveal" data-reveal data-delay="1">Photos that deserve better</h2>
+    </div>
+    <div class="chips">
+      <span class="chip reveal" data-reveal>Portraits</span>
+      <span class="chip reveal" data-reveal data-delay="1">Old family photos</span>
+      <span class="chip reveal" data-reveal data-delay="2">Profile pictures</span>
+      <span class="chip reveal" data-reveal data-delay="3">Low-light shots</span>
+      <span class="chip reveal" data-reveal data-delay="4">Grainy phone photos</span>
+      <span class="chip reveal" data-reveal data-delay="5">Small, low-resolution images</span>
+      <span class="chip reveal" data-reveal data-delay="6">Heavily compressed images</span>
+      <span class="chip reveal" data-reveal data-delay="7">Scanned prints</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ PRIVACY -->
+<section class="section privacy" id="privacy">
+  <div class="container privacy-grid">
+    <div class="privacy-visual reveal-scale" data-reveal aria-hidden="true">
+      <span class="shield">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 3v5.5c0 4.3-2.9 8.2-7 9.5-4.1-1.3-7-5.2-7-9.5V6z"/><path d="m9 12 2 2 4-4"/>
         </svg>
-        <h2 id="error-title">That didn't work</h2>
-        <p id="error-message">Something went wrong.</p>
-        <button class="btn primary" id="btn-retry">Try again</button>
+      </span>
+    </div>
+    <div class="privacy-copy">
+      <p class="kicker reveal" data-reveal>PRIVACY</p>
+      <h2 class="reveal" data-reveal data-delay="1">Your photos. Your machine.</h2>
+      <p class="lede reveal" data-reveal data-delay="2">
+        Enhancement runs entirely on this computer. No image is sent to a third-party service,
+        and there is no account to create.
+      </p>
+      <ul class="ticks big">
+        <li class="reveal" data-reveal data-delay="3">Processed locally — nothing leaves the machine</li>
+        <li class="reveal" data-reveal data-delay="4">Originals and results deleted 30 minutes after the job finishes</li>
+        <li class="reveal" data-reveal data-delay="5">The working folder is wiped on every restart</li>
+        <li class="reveal" data-reveal data-delay="6">No account, no tracking, no analytics</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FAQ -->
+<section class="section faq" id="faq">
+  <div class="container narrow">
+    <div class="section-head">
+      <p class="kicker reveal" data-reveal>FAQ</p>
+      <h2 class="reveal" data-reveal data-delay="1">Questions, answered</h2>
+    </div>
+
+    <div class="accordion" id="accordion">
+      <div class="acc-item reveal" data-reveal>
+        <button class="acc-q" aria-expanded="false"><span>Which formats are supported?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>JPG, PNG and WebP, up to 20&nbsp;MB and 40&nbsp;megapixels. The result keeps your
+          input's format, and PNG and WebP keep transparency.</p></div>
       </div>
-    </section>
-  </main>
+      <div class="acc-item reveal" data-reveal data-delay="1">
+        <button class="acc-q" aria-expanded="false"><span>Are my images stored?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>Only temporarily, on this machine. The original and the result live in a local
+          working folder and are deleted 30 minutes after the job finishes. That folder is also wiped every time
+          the service restarts, so a crash cannot leave photos behind.</p></div>
+      </div>
+      <div class="acc-item reveal" data-reveal data-delay="2">
+        <button class="acc-q" aria-expanded="false"><span>Will my photo be upscaled?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>Photos up to 1600&nbsp;px on the long side get a genuine 2× upscale. Larger photos are
+          enhanced at their original size, because upscaling them is slow and rarely what is wanted.</p></div>
+      </div>
+      <div class="acc-item reveal" data-reveal data-delay="3">
+        <button class="acc-q" aria-expanded="false"><span>Why does it take several seconds?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>Genuine AI inference is running, and on a CPU that takes roughly 5–20 seconds
+          depending on the photo. A CUDA-capable GPU is dramatically faster and needs no change to the app.</p></div>
+      </div>
+      <div class="acc-item reveal" data-reveal data-delay="4">
+        <button class="acc-q" aria-expanded="false"><span>What is the difference between the two modes?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>Both run identical restoration. Beautify additionally evens out skin, adds a soft
+          glow and applies a tone and colour grade. Clear only skips all of that and keeps the photo faithful.</p></div>
+      </div>
+      <div class="acc-item reveal" data-reveal data-delay="5">
+        <button class="acc-q" aria-expanded="false"><span>Does enhancement invent detail?</span><i aria-hidden="true"></i></button>
+        <div class="acc-a"><p>On faces, yes — a face model reconstructs plausible detail, and on a very small
+          source it is generating rather than recovering. Everywhere else the upscaler can only work with what is
+          actually there. Use Clear only when fidelity matters more than looks.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <footer class="foot">
-    <span>Real-ESRGAN + GFPGAN · runs locally</span>
-    <span class="foot-sep">·</span>
-    <span>Photos are deleted automatically after <span id="ttl">30</span> minutes</span>
-  </footer>
-</div>
+<!-- ============================================================ CTA -->
+<section class="section cta-section">
+  <div class="container">
+    <div class="cta reveal-scale" data-reveal>
+      <span class="cta-glow" aria-hidden="true"></span>
+      <h2>Ready to transform your photo?</h2>
+      <p>Upload an image and let the enhancement handle the rest.</p>
+      <a href="#workspace" class="btn btn-primary btn-lg">Enhance a Photo</a>
+    </div>
+  </div>
+</section>
 
+</main>
+
+<!-- ============================================================ FOOTER -->
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand reveal" data-reveal>
+      <span class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l2.1 5.3 5.3 2.1-5.3 2.1L12 17.4l-2.1-5.3L4.6 10l5.3-2.1z" fill="currentColor"/></svg>
+        </span>
+        <span class="brand-name">Beautify</span>
+      </span>
+      <p>AI-powered enhancement for clearer, better-looking photographs — running entirely on your own machine, with nothing uploaded anywhere.</p>
+    </div>
+    <div class="footer-col reveal" data-reveal data-delay="1">
+      <h4>Product</h4>
+      <a href="#workspace">Enhance</a><a href="#features">Features</a><a href="#how">How It Works</a>
+    </div>
+    <div class="footer-col reveal" data-reveal data-delay="2">
+      <h4>Resources</h4>
+      <a href="#tech">Technology</a><a href="#faq">FAQ</a><a href="/docs">API docs</a>
+    </div>
+    <div class="footer-col reveal" data-reveal data-delay="3">
+      <h4>Trust</h4>
+      <a href="#privacy">Privacy</a><a href="/health">Engine status</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <span>&copy; <span id="year">2026</span> Beautify. All enhancement runs on this machine.</span>
+    <span class="footer-note">Runs locally &middot; No account &middot; No tracking</span>
+  </div>
+</footer>
+
+<script src="/static/ui.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -16,6 +16,9 @@
     error: $('view-error'),
   };
 
+  const selectedMode = () =>
+    (document.querySelector('input[name="mode"]:checked') || {}).value || 'beautify';
+
   const state = {
     file: null,
     objectUrl: null,
@@ -118,6 +121,12 @@
 
   $('btn-change').addEventListener('click', () => { fileInput.value = ''; show('idle'); });
 
+  // Keep the action button honest about what it is going to do.
+  document.querySelectorAll('input[name="mode"]').forEach((radio) =>
+    radio.addEventListener('change', () => {
+      $('btn-enhance').textContent = selectedMode() === 'clear' ? 'Clear image' : 'Beautify';
+    }));
+
   // ── enhancing ───────────────────────────────────────────────────────
   $('btn-enhance').addEventListener('click', enhance);
 
@@ -128,8 +137,10 @@
     paintProgress(5, 'Uploading…', 'Sending your photo to the enhancer.');
     show('processing');
 
+    const mode = selectedMode();
     const body = new FormData();
     body.append('image', state.file, state.file.name);
+    body.append('mode', mode);
 
     let data;
     try {
@@ -238,6 +249,7 @@
     const chips = [];
 
     if (i.width && o.width) chips.push(`<span class="stat"><b>${i.width}×${i.height}</b> → <b>${o.width}×${o.height}</b></span>`);
+    if (job.mode) chips.push(`<span class="stat">${job.mode === 'clear' ? 'Cleared' : 'Beautified'}</span>`);
     if (o.scale > 1) chips.push(`<span class="stat">upscaled <b>${o.scale}×</b></span>`);
     if (d.facesRestored > 0) chips.push(`<span class="stat"><b>${d.facesRestored}</b> face${d.facesRestored > 1 ? 's' : ''} restored</span>`);
     else if (d.faceCount > 0) chips.push(`<span class="stat"><b>${d.faceCount}</b> face${d.faceCount > 1 ? 's' : ''} detected</span>`);

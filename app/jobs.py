@@ -43,6 +43,7 @@ class Job:
     expires_at: float = 0.0
     original_path: Optional[str] = None
     original_name: str = "image"
+    mode: str = "beautify"
     original_mime: str = "image/jpeg"
     original_bytes: int = 0
     result_path: Optional[str] = None
@@ -53,6 +54,7 @@ class Job:
     def to_public(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
             "jobId": self.id,
+            "mode": self.mode,
             "status": self.status,
             "stage": self.stage,
             "progress": self.progress,

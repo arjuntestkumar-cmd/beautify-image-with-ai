@@ -68,14 +68,15 @@ Weights go in `models/` (`realesr-general-x4v3.pth`, `realesr-general-wdn-x4v3.p
 | --- | --- | --- |
 | `GET` | `/` | the web UI |
 | `GET` | `/health` | readiness, device, which models are loaded |
-| `POST` | `/api/enhance` | multipart `image=@photo.jpg` → `202` + job id |
+| `POST` | `/api/enhance` | multipart `image=@photo.jpg`, optional `mode=beautify\|clear` → `202` + job id |
 | `GET` | `/api/jobs/{id}` | status, stage, progress, and the result metadata when done |
 | `GET` | `/api/jobs/{id}/result` | the beautified image |
 | `GET` | `/api/jobs/{id}/original` | the original (the before/after slider uses it) |
 | `DELETE` | `/api/jobs/{id}` | delete both files now |
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"                 # beautify
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "mode=clear" # clear only
 curl http://127.0.0.1:8000/api/jobs/<id>
 curl -o out.jpg http://127.0.0.1:8000/api/jobs/<id>/result
 ```
@@ -89,6 +90,26 @@ into processing.
 
 ---
 
+## The two modes
+
+Both run the same restoration - upscale, denoise, face restoration, face clarity. They differ
+only in what happens to the skin and the colour afterwards.
+
+| | Beautify (default) | Clear only |
+| --- | --- | --- |
+| Restore + denoise + sharpen | yes | yes |
+| Face restoration + eye/lip clarity | yes | yes |
+| Skin evened out | yes | **no** |
+| Soft highlight glow on skin | yes | **no** |
+| Tone curve, vibrance, white balance | full (0.46) | **none** |
+| Original skin texture kept | less | **more** (+0.18) |
+
+Measured on a grainy 240x240 portrait, beautify comes out ~11% more saturated and ~11% higher
+contrast than clear, while clear retains more raw skin texture.
+
+Pick **Clear only** when the photo should stay exactly itself, just cleaner - documents of
+people, evidence, product shots, anything where a flattering grade would be wrong.
+
 ## What "Beautify" actually does
 
 There is one mode, but it is not one fixed recipe — it reads the photo first and adapts. That
@@ -96,7 +117,7 @@ adaptation is exactly what the original service's mode presets did; it now happe
 automatically instead of being a question put to the user.
 
 ```
-decode → analyse → plan
+decode → analyse → rescue exposure (dark photos only) → re-analyse → plan
   → de-block, if the input is heavily JPEG-compressed
   → GFPGAN face restoration on a Real-ESRGAN background   (photos with faces that need it)
     or plain Real-ESRGAN restoration                      (everything else)
@@ -110,24 +131,59 @@ decode → analyse → plan
 
 Decisions the pipeline makes on its own:
 
-- **Scale.** Photos at or below 1600 px on the long side get a real 2× upscale; larger photos
+- **Scale.** Photos at or below 1600 px on the long side get a real 2x upscale; larger photos
   are beautified at native size. `AUTO_UPSCALE_MAX_SIDE` moves that line.
-- **Whether to touch faces at all.** A large, sharp, clean face is left alone — running a face
-  model over an already-good face makes it worse. Only degraded, blurry, small or noisy faces
-  are restored.
-- **How hard.** Face-model weight, denoise and detail all scale with the measured blur, noise
-  and compression of that specific photo.
-- **Which faces.** Only the dominant subject, unless it is a genuine group photo (a second face
-  at least ~45% the area of the largest). This is what prevents ghost faces on busy backgrounds.
+- **Exposure.** A photo shot indoors at night is restored faithfully as a *dark* photo unless
+  something corrects the exposure first, so a badly under-exposed frame gets a bounded gamma
+  lift, its black point reset, its local contrast restored and some of the chroma a sensor
+  fails to record in the dark put back. It then gets **re-analysed**, because every measurement
+  taken on a dark frame misleads: grain hides in the shadows and reads as clean, soft edges
+  read as blur. Strictly gated on measured under-exposure - a normally-exposed photo is not
+  touched at all. On a dark test frame: +73% brightness, +100% contrast.
+- **Shadow noise.** Brightening multiplies whatever grain was hiding in the shadows, and the
+  noise measurement understates it badly (that grain surfaces as slow colour mottling, which a
+  3-pixel median residual barely registers - one test frame read 0.099 while the background
+  visibly crawled). The lift applied is itself the evidence, so it sets a floor under the
+  effective noise figure, and a dedicated chroma pass cleans the colour blotching at reduced
+  scale, where the blobs are actually small enough to filter. Luminance is left alone.
+- **Faces.** Face restoration is attempted on every photo, and the **face model's own detector**
+  decides whether there is a face - not OpenCV's Haar cascade, which is unreliable enough to
+  miss an obvious portrait entirely. Every face it finds is restored. If it finds none, the
+  result is simply the Real-ESRGAN background, so trying costs only the detection.
+- **How hard.** Denoise, detail, face clarity and how much original texture is preserved all
+  scale with the measured blur, noise and compression of that specific photo.
+- **Clarity inside the face.** Eyes, lashes, brows and lips get a dedicated sharpening pass with
+  the skin protection turned off. Everywhere else that protection is right; on the face it left
+  the part people actually look at as the softest thing in the frame.
+- **Structure survives the clean-up.** Denoising runs *after* super-resolution, so at the
+  strength heavy grain needs it also smears hair strands and outlines into blobs. The denoiser
+  blends back toward the original wherever the luminance carries confident structure: flat skin
+  is cleaned in full, a hair strand keeps most of itself. On a grainy test portrait that
+  recovered ~60% more strand detail in the hair.
+- **Hands, clothing and objects get their own clarity pass.** Only the face goes through the
+  face model; everything else is whatever the upscaler produced, then softened by denoising, so
+  it needs *more* sharpening than the face to belong in the same photo. Two things used to
+  prevent that. Edge confidence was normalised against a single global level, so one very
+  high-contrast region - dark hair against bright skin - set the bar for the whole frame and
+  fabric folds or a fingernail rim scored near zero; it is now normalised locally. And the skin
+  protection applied to anything skin-coloured anywhere, which quietly held back hands, arms and
+  necks by 55%; it is now scoped to the face. On the same test portrait, detail rose 66% on the
+  hand and 181% on the clothing.
 - **Screenshots and documents** are detected and never get face restoration or heavy texture.
 
-Two things deliberately hold the "AI face" look back, because a high face-model weight is
-exactly what produces waxy, re-drawn skin:
+What holds the waxy, re-drawn "AI face" look back is **skin-texture re-injection**: after
+restoration the source's own high-frequency detail is added back, in skin areas only, scaled by
+how clean the source was. This scaling matters more than it sounds: a clean photo has real pores
+worth keeping, but a degraded one has only blur, noise and JPEG blocks in those same
+frequencies, and pushing those back over a restored face is what made results look barely
+different from the input.
 
-- the face-model weight is **capped at 0.58** — lower than the original's portrait mode;
-- the source's real skin micro-texture is **re-injected** after restoration, in skin areas only.
+Note that GFPGAN v1.4's `clean` architecture ignores the `weight` argument entirely — it takes
+`**kwargs` and never reads it. So texture re-injection is not merely *a* control over how much
+the face is repainted, it is the **only** one. Any code that appears to throttle the face model
+with a weight is not doing anything.
 
-Beauty comes from tone, hair and eyes, not from repainting the face.
+Beauty comes from tone, hair, eyes and a properly restored face — not from repainting it.
 
 ---
 

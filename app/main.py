@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +26,7 @@ from .config import ROOT, get_settings
 from .errors import AppError, CorruptedImage, FileTooLarge, UnsupportedImageFormat
 from .jobs import Job, JobStore
 from .logging_utils import configure, get_logger
-from .pipeline.beautify import beautify
+from .pipeline.beautify import MODES, beautify
 from .pipeline.registry import ModelRegistry
 from .validation import MIME_BY_FORMAT, decode_and_normalize
 
@@ -105,13 +105,14 @@ def _work(job: Job) -> None:
     path, result = beautify(
         registry, settings, decoded, out_template,
         progress=lambda stage, pct, msg: store.progress(job, stage, pct, msg),
+        mode=job.mode,
     )
     job.result_path = path
     job.result = result
 
 
 @app.post("/api/enhance", status_code=202)
-async def enhance(image: UploadFile = File(...)) -> JSONResponse:
+async def enhance(image: UploadFile = File(...), mode: str = Form("beautify")) -> JSONResponse:
     # Land the upload on disk under a temporary name and fully validate it BEFORE a job exists,
     # so a rejected file never leaves a phantom job behind.
     upload_path = os.path.join(settings.DATA_DIRECTORY, f"upload-{uuid.uuid4().hex}")
@@ -154,12 +155,14 @@ async def enhance(image: UploadFile = File(...)) -> JSONResponse:
     os.replace(upload_path, original_path)
 
     job.original_path = original_path
+    job.mode = mode if mode in MODES else "beautify"
     job.original_name = os.path.basename(image.filename or "image")
     job.original_mime = MIME_BY_FORMAT.get(decoded.detected_format, "image/jpeg")
     job.original_bytes = total
 
     store.submit(job, _work)
-    log.info("job %s queued (%sx%s, %s KB)", job.id, decoded.width, decoded.height, total // 1024)
+    log.info("job %s queued (%s, %sx%s, %s KB)", job.id, job.mode, decoded.width, decoded.height,
+             total // 1024)
     return JSONResponse(status_code=202, content={"success": True, "data": job.to_public()})
 
 
