@@ -2,7 +2,9 @@
 (() => {
   'use strict';
 
-  const MAX_BYTES = 20 * 1024 * 1024;
+  // Kept in step with MAX_UPLOAD_BYTES on the server. A large photo is no longer a problem to
+  // be refused: it is processed in chunks and simply takes longer.
+  const MAX_BYTES = 64 * 1024 * 1024;
   const ACCEPTED = ['image/jpeg', 'image/png', 'image/webp'];
   const POLL_MS = 900;
 
@@ -26,6 +28,11 @@
     polling: null,
     shown: 0,        // the percentage currently painted on the bar
     target: 0,       // the percentage the server last reported
+    looks: [],       // the filter catalogue, fetched once from /api/filters
+    look: null,      // the look chosen for the next run
+    defaultLook: null,
+    job: null,       // the last completed job payload, for re-styling
+    restyling: false,
   };
 
   // ── view switching ──────────────────────────────────────────────────
@@ -60,6 +67,98 @@
       pill.textContent = 'offline';
       pill.className = 'pill bad';
     }
+  }
+
+  // ── premium looks ───────────────────────────────────────────────────
+  // The catalogue comes from the server so the two never disagree about what exists or which
+  // one is the default.
+  async function loadLooks() {
+    try {
+      const res = await fetch('/api/filters');
+      const payload = await res.json();
+      if (!payload.success) return;
+      state.looks = payload.data.filters || [];
+      state.defaultLook = payload.data.default;
+      state.look = state.defaultLook;
+      renderChips($('looks-chips'), pickLook, state.look);
+      $('looks-pick').hidden = state.looks.length === 0;
+    } catch {
+      // No catalogue: the picker stays hidden and the server applies its own default.
+    }
+  }
+
+  function renderChips(host, onPick, selected) {
+    host.innerHTML = '';
+    for (const look of state.looks) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.setAttribute('role', 'radio');
+      chip.setAttribute('aria-checked', String(look.id === selected));
+      chip.title = look.description;
+      chip.innerHTML =
+        `<span class="chip-name"></span><span class="chip-tag"></span>`;
+      chip.querySelector('.chip-name').textContent = look.name;
+      chip.querySelector('.chip-tag').textContent =
+        look.id === 'none' ? 'no filter' : (look.id === state.defaultLook ? 'default' : '');
+      chip.addEventListener('click', () => onPick(look.id));
+      host.appendChild(chip);
+    }
+  }
+
+  function markSelected(host, id) {
+    [...host.children].forEach((chip, i) =>
+      chip.setAttribute('aria-checked', String(state.looks[i] && state.looks[i].id === id)));
+  }
+
+  function pickLook(id) {
+    state.look = id;
+    markSelected($('looks-chips'), id);
+  }
+
+  // In the result view a look change is a server round-trip, but a cheap one: it re-renders
+  // from the un-styled image the job kept, so nothing is analysed or restored a second time.
+  async function pickDoneLook(id) {
+    if (state.restyling || !state.job) return;
+    const block = $('looks-done');
+    const previous = state.job.look;
+    const jobId = state.job.jobId;
+    state.restyling = true;
+    block.classList.add('busy');
+    markSelected($('looks-done-chips'), id);
+    try {
+      const body = new FormData();
+      body.append('filter', id);
+      const res = await fetch(`/api/jobs/${jobId}/filter`, { method: 'POST', body });
+      const payload = await res.json();
+      const job = (res.ok && payload.success) ? await waitForJob(jobId) : null;
+      // The user may have moved on while this was in flight; if they have, the result of a
+      // job they are no longer looking at must not be painted over whatever is on screen now.
+      if (state.job && state.job.jobId !== jobId) return;
+      if (job) applyResult(job);
+      else markSelected($('looks-done-chips'), previous);
+    } catch {
+      markSelected($('looks-done-chips'), previous);
+    } finally {
+      state.restyling = false;
+      block.classList.remove('busy');
+    }
+  }
+
+  // Poll until the re-style finishes. It is far cheaper than a full run, but it still goes
+  // through the same one-at-a-time queue, so it can be waiting behind somebody's photo.
+  async function waitForJob(id) {
+    for (let i = 0; i < 1200; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      try {
+        const res = await fetch(`/api/jobs/${id}`);
+        const payload = await res.json();
+        if (!res.ok || !payload.success) return null;
+        if (payload.data.status === 'completed') return payload.data;
+        if (payload.data.status === 'failed') return null;
+      } catch { /* a dropped poll is not fatal */ }
+    }
+    return null;
   }
 
   // ── choosing a file ─────────────────────────────────────────────────
@@ -141,6 +240,7 @@
     const body = new FormData();
     body.append('image', state.file, state.file.name);
     body.append('mode', mode);
+    if (state.look) body.append('filter', state.look);
 
     let data;
     try {
@@ -181,7 +281,16 @@
     }
 
     state.target = job.progress || 0;
-    paintProgress(state.target, stageLabel(job.stage), job.message);
+    // Being behind other people is not the same as being stuck, and the difference is worth
+    // saying out loud when the bar has not moved for a while.
+    const queued = job.status === 'queued' && job.queuePosition > 0;
+    const ahead = job.queuePosition;
+    const label = queued
+      ? `Queued — ${ahead} photo${ahead > 1 ? 's' : ''} ahead of yours`
+      : stageLabel(job.stage);
+    paintProgress(state.target, label, queued
+      ? 'The server finishes one photo at a time so every one of them completes.'
+      : job.message);
 
     if (job.status === 'completed') {
       clearInterval(state.polling);
@@ -201,7 +310,16 @@
       restoring_faces: 'Restoring faces…',
       blending: 'Blending faces…',
       enhancing: 'Enhancing detail…',
+      exposure: 'Correcting the exposure…',
+      deblock: 'Cleaning compression…',
+      chroma: 'Cleaning colour noise…',
+      denoise: 'Removing grain…',
+      face_clarity: 'Refining faces…',
+      body_clarity: 'Refining detail…',
+      hair: 'Refining hair…',
+      skin_clean: 'Evening out skin…',
       finishing: 'Finishing…',
+      styling: 'Applying the finish…',
       encoding: 'Saving…',
       completed: 'Done',
     })[stage] || 'Working…';
@@ -222,24 +340,35 @@
   // ── result ──────────────────────────────────────────────────────────
   function finish(job) {
     paintProgress(100, 'Done', 'Finished.');
-    const resultUrl = `/api/jobs/${job.jobId}/result`;
+    $('img-before').src = state.objectUrl;
+    applyResult(job, () => {
+      // The picker only appears if the server kept an un-styled copy; without one, changing
+      // the look would mean re-running the whole pipeline, so it is not offered.
+      const canRestyle = job.details?.canRestyle && state.looks.length > 0;
+      $('looks-done').hidden = !canRestyle;
+      if (canRestyle) renderChips($('looks-done-chips'), pickDoneLook, job.look);
+      show('done');
+    });
+  }
 
+  // Point the comparison and the download button at whatever the job's current result is.
+  // `resultUrl` carries a version, so a re-styled image is a new address and the browser
+  // fetches it instead of showing the one it already has.
+  function applyResult(job, then) {
+    state.job = job;
     const after = $('img-after');
-    const before = $('img-before');
-    before.src = state.objectUrl;
-
     after.onload = () => {
       setSplit(50);
       renderStats(job);
       const dl = $('btn-download');
-      dl.href = resultUrl;
+      dl.href = job.resultUrl;
       const stem = (state.file?.name || 'image').replace(/\.[^.]+$/, '');
       const ext = (job.output?.format || 'image/jpeg').split('/')[1].replace('jpeg', 'jpg');
       dl.setAttribute('download', `${stem}-beautified.${ext}`);
-      show('done');
+      if (then) then();
     };
     after.onerror = () => fail('Could not load the result', 'The enhanced image could not be fetched.');
-    after.src = resultUrl;
+    after.src = job.resultUrl;
   }
 
   function renderStats(job) {
@@ -250,6 +379,9 @@
 
     if (i.width && o.width) chips.push(`<span class="stat"><b>${i.width}×${i.height}</b> → <b>${o.width}×${o.height}</b></span>`);
     if (job.mode) chips.push(`<span class="stat">${job.mode === 'clear' ? 'Cleared' : 'Beautified'}</span>`);
+    const look = state.looks.find((l) => l.id === job.look);
+    if (look && look.id !== 'none') chips.push(`<span class="stat"><b>${look.name}</b></span>`);
+    if (d.chunked) chips.push(`<span class="stat">processed in chunks</span>`);
     if (o.scale > 1) chips.push(`<span class="stat">upscaled <b>${o.scale}×</b></span>`);
     if (d.facesRestored > 0) chips.push(`<span class="stat"><b>${d.facesRestored}</b> face${d.facesRestored > 1 ? 's' : ''} restored</span>`);
     else if (d.faceCount > 0) chips.push(`<span class="stat"><b>${d.faceCount}</b> face${d.faceCount > 1 ? 's' : ''} detected</span>`);
@@ -265,7 +397,10 @@
   function reset() {
     clearInterval(state.polling);
     state.jobId = null;
+    state.job = null;
     state.file = null;
+    state.look = state.defaultLook;
+    if (state.looks.length) renderChips($('looks-chips'), pickLook, state.look);
     fileInput.value = '';
     if (state.objectUrl) { URL.revokeObjectURL(state.objectUrl); state.objectUrl = null; }
     $('img-after').removeAttribute('src');
@@ -321,5 +456,8 @@
 
   // ── boot ────────────────────────────────────────────────────────────
   checkHealth();
+  loadLooks();
   setSplit(50);
 })();
+
+

@@ -75,6 +75,12 @@ class ModelRegistry:
         self._wdn_state: Optional[dict] = None
         self._general_dni: Optional[float] = None
         self._dni_lock = threading.Lock()
+        # Held for the whole model phase of a job. Both models carry per-request state that
+        # lives on the shared object - DNI rewrites the Real-ESRGAN weights, and the crop-based
+        # face path swaps GFPGAN's background upsampler out and back - so two jobs in the model
+        # stage at once would read each other's settings and mix their output. With
+        # WORKER_CONCURRENCY=1 this is never contended; it is what makes raising it safe.
+        self.lock = threading.RLock()
 
     # ---- accessors ----
     @property
@@ -108,6 +114,21 @@ class ModelRegistry:
             "models": {k: bool(v) for k, v in s.loaded.items()},
             "modelErrors": {k: "load_failed" for k in s.errors},  # generic — never leak paths
         }
+
+    def release(self) -> None:
+        """Hand cached accelerator memory back between jobs.
+
+        Torch keeps its allocator's blocks after a job finishes, so the next one in the queue
+        starts on top of the last one's peak instead of on a clean slate. Two photos that each
+        fit comfortably can then fail together. Cheap to call and safe on CPU-only builds.
+        """
+        torch = self._torch
+        if torch is None or not self._status.cuda_available:
+            return
+        try:
+            torch.cuda.empty_cache()
+        except Exception:  # pragma: no cover - reclaiming memory must never raise
+            pass
 
     # ---- lifecycle ----
     def load(self) -> None:

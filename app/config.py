@@ -50,10 +50,16 @@ class Settings(BaseSettings):
     MOCK_MODE: bool = False
 
     # --- limits -------------------------------------------------------------------------
-    MAX_UPLOAD_BYTES: int = 20_971_520      # 20 MB
-    MAX_INPUT_PIXELS: int = 40_000_000
-    MAX_OUTPUT_PIXELS: int = 80_000_000
-    MAX_OUTPUT_SIDE: int = 8192
+    # These are higher than they were because the pipeline no longer holds a whole large photo
+    # in memory at once (see pipeline/chunked.py). A big file is now a question of how long it
+    # takes, not of whether the box survives it, so there is no longer a reason to refuse one.
+    MAX_UPLOAD_BYTES: int = 67_108_864      # 64 MB
+    MAX_INPUT_PIXELS: int = 80_000_000
+    MAX_OUTPUT_PIXELS: int = 160_000_000
+    MAX_OUTPUT_SIDE: int = 16384
+    # An image past MAX_INPUT_PIXELS is fitted to that budget and processed, not rejected.
+    # Only a file that cannot be decoded at all is turned away now.
+    DOWNSCALE_OVERSIZE_INPUT: bool = True
 
     # Images whose longest side is at or below this get a genuine 2x upscale; larger images are
     # beautified at their native size (upscaling them is slow and rarely what the user wants).
@@ -68,13 +74,33 @@ class Settings(BaseSettings):
 
     # --- processing ---------------------------------------------------------------------
     WORKER_CONCURRENCY: int = 1        # inference is CPU/GPU bound; one at a time is correct
-    MAX_QUEUED_JOBS: int = 32
+    MAX_QUEUED_JOBS: int = 64          # waiting is fine; being turned away is not
+    # A deadline, not a size limit. It scales with the photo (below), so a genuinely large job
+    # is given the time it needs and only a job that has actually hung is stopped.
     JOB_TIMEOUT_SECONDS: int = 900
+    JOB_TIMEOUT_SECONDS_PER_MEGAPIXEL: int = 90
+    JOB_TIMEOUT_SECONDS_MAX: int = 5400
+
+    # --- chunked processing ---------------------------------------------------------------
+    # Past this many pixels the heavy stages run over overlapping tiles instead of the whole
+    # array, so peak memory follows the tile size and not the photo. See pipeline/chunked.py.
+    CHUNK_THRESHOLD_PIXELS: int = 4_000_000
+    CHUNK_TILE_SIZE: int = 768          # tile edge for the classical stages
+    CHUNK_OVERLAP: int = 48             # context carried around each tile, then discarded
+    # The model tile is quoted on its INPUT side and is much smaller, because RealESRGANer runs
+    # its 4x network before scaling back down: 384 px in is a 1536 px tensor, not a 384 px one.
+    MODEL_CHUNK_TILE_SIZE: int = 384
+    MODEL_CHUNK_OVERLAP: int = 24
 
     # --- tuning (bounded; see pipeline/beautify.py) ---------------------------------------
     SHARPNESS_SAFETY_LIMIT: float = 0.06  # max fraction of halo/over-shot pixels tolerated
     HAIR_REFINEMENT_ENABLED: bool = True
     OUTPUT_QUALITY: int = 92           # jpeg/webp encoder quality
+    # The un-styled enhanced image is kept next to the result so a look can be changed or
+    # removed later without re-running any of the models. Slightly higher quality than the
+    # delivered file, because a look is applied on top of it.
+    KEEP_UNFILTERED_BASE: bool = True
+    BASE_QUALITY: int = 96
 
     @property
     def is_production(self) -> bool:

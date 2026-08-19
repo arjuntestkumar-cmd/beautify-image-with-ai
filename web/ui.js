@@ -117,36 +117,36 @@
     });
   });
 
-  /* ------------------------------------- illustrative comparison --- */
-  const demo = document.getElementById('demo');
-  const demoAfter = document.getElementById('demo-after');
-  const demoHandle = document.getElementById('demo-handle');
-
-  if (demo && demoAfter && demoHandle) {
+  /* ---------------------------------------- comparison sliders ---- */
+  /* Two of these on the page now - the illustrative one and the real sample - so the
+     behaviour is written once and attached to whatever is present. Each slider owns its own
+     ---split, so they drag independently. */
+  const makeCompare = (root, after, handle) => {
+    if (!root || !after || !handle) return;
     let dragging = false;
     const setSplit = (pct) => {
       const v = Math.max(0, Math.min(100, pct));
-      demoAfter.style.setProperty('--split', `${v}%`);
-      demoHandle.style.left = `${v}%`;
-      demoHandle.setAttribute('aria-valuenow', Math.round(v));
+      after.style.setProperty('--split', `${v}%`);
+      handle.style.left = `${v}%`;
+      handle.setAttribute('aria-valuenow', Math.round(v));
     };
     const fromEvent = (e) => {
-      const r = demo.getBoundingClientRect();
+      const r = root.getBoundingClientRect();
       setSplit(((e.clientX - r.left) / r.width) * 100);
     };
 
-    demo.addEventListener('pointerdown', (e) => {
-      dragging = true; demo.setPointerCapture(e.pointerId); fromEvent(e);
+    root.addEventListener('pointerdown', (e) => {
+      dragging = true; root.setPointerCapture(e.pointerId); fromEvent(e);
     });
-    demo.addEventListener('pointermove', (e) => { if (dragging) fromEvent(e); });
+    root.addEventListener('pointermove', (e) => { if (dragging) fromEvent(e); });
     ['pointerup', 'pointercancel'].forEach((ev) =>
-      demo.addEventListener(ev, (e) => {
+      root.addEventListener(ev, (e) => {
         dragging = false;
-        try { demo.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+        try { root.releasePointerCapture(e.pointerId); } catch { /* already released */ }
       }));
 
-    demoHandle.addEventListener('keydown', (e) => {
-      const now = Number(demoHandle.getAttribute('aria-valuenow')) || 50;
+    handle.addEventListener('keydown', (e) => {
+      const now = Number(handle.getAttribute('aria-valuenow')) || 50;
       const step = e.shiftKey ? 10 : 3;
       if (e.key === 'ArrowLeft') { e.preventDefault(); setSplit(now - step); }
       if (e.key === 'ArrowRight') { e.preventDefault(); setSplit(now + step); }
@@ -155,7 +155,11 @@
     });
 
     setSplit(50);
-  }
+  };
+
+  makeCompare(document.getElementById('demo'),
+              document.getElementById('demo-after'),
+              document.getElementById('demo-handle'));
 
   /* ------------------------------------------- pointer-lit cards --- */
   if (!coarse && !reduced) {

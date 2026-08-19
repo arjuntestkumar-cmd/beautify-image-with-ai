@@ -13,7 +13,7 @@ Ported verbatim (same math, same constants) from the multi-mode service:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
@@ -38,6 +38,61 @@ def _skin_mask_wide(rgb: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------------------
+# mask-exact compositing
+# ---------------------------------------------------------------------------------------
+# OpenCV sizes a Gaussian kernel at cvRound(sigma * (depth == CV_8U ? 3 : 4) * 2 + 1) | 1. Every
+# mask in this file is float32, so its feather reaches FOUR sigma, not three. Anything that crops
+# for one of these masks has to pad by that much, or the mask is still non-zero where the crop
+# stops - and a non-zero mask on a crop edge is a straight line between processed and untouched
+# pixels, which is the rectangle this pipeline was reported to draw around restored faces.
+GAUSS_SUPPORT = 4.0
+
+
+def mask_gate(mask: np.ndarray, floor: float = 0.10) -> np.ndarray:
+    """1 wherever `mask` carries at least `floor` of its strength, ramping to EXACTLY 0 at 0.
+
+    A stage's own mask cannot be reused directly as a composite weight: the stage has already
+    scaled its effect by that mask, so multiplying by it a second time would attenuate the very
+    thing it was asked to do. The gate reaches 1 while the mask is still weak, so everything the
+    mask actually asked for passes through unchanged; the only pixels it holds back are the ones
+    where the effect was already below a tenth of full strength. It reaches a true zero exactly
+    where the mask does, which is the entire point.
+    """
+    return np.clip(np.asarray(mask, np.float32) * (1.0 / max(1e-6, float(floor))), 0.0, 1.0)
+
+
+def composite_masked(base: np.ndarray, out: np.ndarray, mask: Optional[np.ndarray],
+                     floor: float = 0.10) -> np.ndarray:
+    """Put `out` back over `base` under `mask`, so a masked op is BIT-IDENTICAL to its input
+    wherever the mask is zero.
+
+    Every stage here round-trips its piece through LAB or YCrCb, and those conversions are lossy:
+    RGB -> LAB -> RGB moves a pixel by up to four levels even where the mask says to leave it
+    alone. Measured on a smooth frame, outside the stage's own mask: face_clarity max 3 mean
+    0.889, refine_hair max 3 mean 0.926, body_clarity max 1, skin_clean max 1, soft_glow max 1,
+    filters.apply_face max 4 mean 0.774. Inside a cropped region that dither is present and
+    outside it is not, and the boundary between them is a straight line - which on smooth content,
+    a blurred background most of all, is exactly the square edge users see.
+
+    At g = 0 this returns `base` unchanged; at g = 1 it returns `out` unchanged, because a uint8
+    promoted to float32 and multiplied by 1.0 is still an exact integer. So it is a genuine
+    identity at both ends, not an approximation of one.
+
+    Rounds rather than truncates on the way back to uint8. The tail of a Gaussian feather is full
+    of values like 1e-8, and truncation turns the resulting 136.9999 into 136 - a one-level error
+    along the entire fringe of every mask in this pipeline.
+
+    Pointwise, so a tiled call still matches the whole-image call exactly: the chunking
+    guarantees in chunked.py are untouched by this.
+    """
+    if mask is None:
+        return out
+    g = mask_gate(mask, floor)[..., None]
+    return np.clip(base.astype(np.float32) * (1.0 - g) + out.astype(np.float32) * g,
+                   0, 255).round().astype(np.uint8)
+
+
+# ---------------------------------------------------------------------------------------
 # denoise / deblock
 # ---------------------------------------------------------------------------------------
 def deblock_jpeg(rgb: np.ndarray, jpeg_score: float) -> np.ndarray:
@@ -50,7 +105,7 @@ def deblock_jpeg(rgb: np.ndarray, jpeg_score: float) -> np.ndarray:
 
 
 def denoise(rgb: np.ndarray, strength: float, noise_score: float, jpeg_score: float,
-            protect_edges: bool = True) -> np.ndarray:
+            protect_edges: bool = True, edge_hi: Optional[float] = None) -> np.ndarray:
     """Chroma-priority denoise + optional deblock.
 
     `protect_edges` blends the cleaned result back toward the original wherever the luminance
@@ -81,7 +136,7 @@ def denoise(rgb: np.ndarray, strength: float, noise_score: float, jpeg_score: fl
 
         if protect_edges:
             lab_l = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)[:, :, 0].astype(np.float32)
-            structure = (_edge_confidence(lab_l) * 0.85)[..., None]
+            structure = (_edge_confidence(lab_l, hi=edge_hi) * 0.85)[..., None]
             out = np.clip(rgb.astype(np.float32) * structure
                           + out.astype(np.float32) * (1.0 - structure), 0, 255).astype(np.uint8)
 
@@ -91,7 +146,7 @@ def denoise(rgb: np.ndarray, strength: float, noise_score: float, jpeg_score: fl
 # ---------------------------------------------------------------------------------------
 # detail
 # ---------------------------------------------------------------------------------------
-def _edge_confidence(l: np.ndarray, local: bool = True) -> np.ndarray:
+def _edge_confidence(l: np.ndarray, local: bool = True, hi: Optional[float] = None) -> np.ndarray:
     """Where does this image carry real structure? 0 = flat, 1 = a confident edge.
 
     Normalisation is LOCAL by default, and that matters more than it sounds. Against a single
@@ -101,11 +156,16 @@ def _edge_confidence(l: np.ndarray, local: bool = True) -> np.ndarray:
     everything except the face came back mushy. Comparing each pixel against its own
     neighbourhood gives quiet regions their structure back, while the floor stops a flat, empty
     patch from being scaled up into amplified noise.
+
+    `hi` is that floor's reference, and it is the one number here measured over the WHOLE frame.
+    When this runs on a tile of a large photo it must be passed in (chunked.sample_edge_hi),
+    because a tile of flat sky and a tile of hair would otherwise pick wildly different floors
+    and sharpen by visibly different amounts on either side of the join.
     """
     gx = cv2.Scharr(l, cv2.CV_32F, 1, 0)
     gy = cv2.Scharr(l, cv2.CV_32F, 0, 1)
     mag = cv2.magnitude(gx, gy)
-    hi = float(np.percentile(mag, 92)) + 1e-6
+    hi = float(np.percentile(mag, 92)) + 1e-6 if hi is None else float(hi)
     if local:
         ref = np.maximum(cv2.blur(mag, (31, 31)) * 2.0, 0.12 * hi)
         conf = np.clip(mag / ref, 0.0, 1.0)
@@ -122,6 +182,9 @@ def edge_aware_sharpen(
     region_mask: Optional[np.ndarray] = None,
     halo_limit: float = 16.0,
     skin_guard_mask: Optional[np.ndarray] = None,
+    edge_hi: Optional[float] = None,
+    soft_radius: float = 0.0,
+    soft_gain: float = 0.0,
 ) -> np.ndarray:
     """Sharpen luminance where structure is confident. `strength` 0..1.
 
@@ -129,6 +192,19 @@ def edge_aware_sharpen(
     skin-coloured anywhere in the frame - including a hand, an arm or a neck, which are then
     held back by 55% and come out soft while the rest of the photo sharpens around them. Pass
     the face region to protect the face and leave the rest of the body alone.
+
+    `soft_radius` / `soft_gain` add a SECOND, wider scale, and they are what makes this pass
+    able to do anything at all for a soft-focus photograph. The 1.1 px unsharp below measures
+    the detail an image carries between one and two pixels. A frame defocused at sigma ~4 has
+    almost none there: the residual it leaves on a 60-level edge is about 0.5 of a level, so no
+    value of `strength` can make it visible - the radius is wrong, not the gain. At sigma 4 the
+    same edge leaves ~4.5 levels, and a gain near 2 is what inverts a Gaussian of that width at
+    its half-power point. Both default to off, so every existing caller is unchanged.
+
+    What keeps the wide scale safe is that its clamp is ABSOLUTE. A genuinely sharp edge leaves
+    a residual of ~30% of its contrast at this radius, so proportional gain there would be a
+    halo machine; clamping the wide term to `halo_limit * 0.5` LEVELS means a hard edge can
+    never receive more than that times `soft_gain` of overshoot, however contrasty it is.
     """
     if strength <= 0.02:
         return rgb
@@ -137,17 +213,39 @@ def edge_aware_sharpen(
     blur = cv2.GaussianBlur(l, (0, 0), sigmaX=1.1)
     high = np.clip(l - blur, -halo_limit, halo_limit)
 
-    weight = _edge_confidence(l) * float(min(1.2, strength * 1.4))
+    conf = _edge_confidence(l, hi=edge_hi)
+    weight = conf * float(min(1.2, strength * 1.4))
+    guard_mul = None
     if protect_skin:
         guard = _skin_mask(rgb)
         if skin_guard_mask is not None:
             guard = guard * np.clip(skin_guard_mask, 0.0, 1.0)
-        weight *= (1.0 - 0.55 * guard)
-    if region_mask is not None:
-        weight = weight * np.clip(region_mask, 0.0, 1.0)
+        guard_mul = (1.0 - 0.55 * guard)
+        weight *= guard_mul
+    region = None if region_mask is None else np.clip(region_mask, 0.0, 1.0)
+    if region is not None:
+        weight = weight * region
 
-    lab[:, :, 0] = np.clip(l + weight * high, 0, 255)
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    if soft_radius > 1.0 and soft_gain > 0.02:
+        # Same confidence map, same guards, same region - only the scale differs.
+        wide_weight = conf * float(min(2.0, soft_gain))
+        if guard_mul is not None:
+            wide_weight *= guard_mul
+        if region is not None:
+            wide_weight = wide_weight * region
+        wide_limit = halo_limit * 0.5
+        wide_high = np.clip(l - cv2.GaussianBlur(l, (0, 0), sigmaX=float(soft_radius)),
+                            -wide_limit, wide_limit)
+        lab[:, :, 0] = np.clip(l + weight * high + wide_weight * wide_high, 0, 255)
+    else:
+        lab[:, :, 0] = np.clip(l + weight * high, 0, 255)
+    out = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    # Where the mask is zero this op has already decided to do nothing to L - but the LAB round
+    # trip does something anyway, by up to four levels, over the whole piece it was handed. On a
+    # cropped region that dither stops dead at the crop edge. Compositing the result back under
+    # the mask makes "nothing" mean nothing. Unmasked callers (the final detail pass, _mock_restore)
+    # pass region_mask=None and are returned untouched.
+    return composite_masked(rgb, out, region_mask)
 
 
 def hair_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
@@ -162,20 +260,28 @@ def hair_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
         y1 = min(h, b.y + b.h + int(b.h * 0.2))
         mask[y0:y1, x0:x1] = 1.0
     if mask.max() > 0:
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(3.0, w / 60.0))
+        # Feather relative to the HEAD, not the frame. A frame-relative sigma made this band
+        # depend on how big the photo happens to be - 100 px of blur on a 6000 px image, which
+        # smears the band far past the hair - and it made the mask impossible to reproduce from
+        # a crop, which is what the chunked path needs it to be.
+        span = max(b.w for b in face_boxes)
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(3.0, span / 9.0))
     return mask
 
 
-def refine_hair(rgb: np.ndarray, face_boxes: List, strength: float, out_scale: float = 1.0) -> np.ndarray:
+def refine_hair(rgb: np.ndarray, face_boxes: List, strength: float, out_scale: float = 1.0,
+                mask: Optional[np.ndarray] = None, edge_hi: Optional[float] = None) -> np.ndarray:
     """Edge-aware detail concentrated on the head/hair region (strand separation, not fake strands)."""
     if strength <= 0.02 or not face_boxes:
         return rgb
-    scaled = [type(b)(int(b.x * out_scale), int(b.y * out_scale), int(b.w * out_scale), int(b.h * out_scale))
-              for b in face_boxes]
-    mask = hair_region_mask(rgb.shape, scaled)
+    if mask is None:
+        scaled = [type(b)(int(b.x * out_scale), int(b.y * out_scale),
+                          int(b.w * out_scale), int(b.h * out_scale)) for b in face_boxes]
+        mask = hair_region_mask(rgb.shape, scaled)
     if mask.max() <= 0:
         return rgb
-    return edge_aware_sharpen(rgb, strength=strength, protect_skin=True, region_mask=mask, halo_limit=12.0)
+    return edge_aware_sharpen(rgb, strength=strength, protect_skin=True, region_mask=mask,
+                              halo_limit=12.0, edge_hi=edge_hi)
 
 
 def face_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
@@ -194,7 +300,23 @@ def face_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
     return np.clip(mask, 0.0, 1.0)
 
 
-def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float) -> np.ndarray:
+# What a stage cropping for one of these masks has to know, attached to the mask function itself
+# so the crop can ask instead of guessing and the two can never drift apart:
+#   .reach  how far the mask's SHAPE extends past the face box, as a fraction of (box w, box h)
+#   .sigma  the feather, as (floor in pixels, fraction of the box WIDTH)
+# face: an ellipse of half-axes 0.62w / 0.68h about the box centre reaches 0.12w past the box
+#       sides and 0.18h past its top and bottom.
+# hair: the band extends 0.55w sideways, 0.9h above the box and 0.2h below it.
+# The two reach numbers differ per axis while both sigmas are driven by the WIDTH, which is why
+# chunked.union_rect must pad per axis rather than with one scalar. See chunked.union_rect.
+face_region_mask.reach = (0.12, 0.18)
+face_region_mask.sigma = (6.0, 1.0 / 9.0)
+hair_region_mask.reach = (0.55, 0.90)
+hair_region_mask.sigma = (3.0, 1.0 / 9.0)
+
+
+def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float,
+                 mask: Optional[np.ndarray] = None, edge_hi: Optional[float] = None) -> np.ndarray:
     """Sharpen structure inside the face: eyes, lashes, brows, lips, stubble.
 
     Everywhere else the sharpener protects skin, which is right for a photo as a whole but
@@ -206,18 +328,55 @@ def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float) -> np.ndarr
     """
     if strength <= 0.02 or not face_boxes:
         return rgb
-    mask = face_region_mask(rgb.shape, face_boxes)
+    if mask is None:
+        mask = face_region_mask(rgb.shape, face_boxes)
     if mask.max() <= 0:
         return rgb
     return edge_aware_sharpen(rgb, strength=strength, protect_skin=False,
-                              region_mask=mask, halo_limit=10.0)
+                              region_mask=mask, halo_limit=10.0, edge_hi=edge_hi)
+
+
+def _stride_for(shape, budget: int = 4_000_000) -> int:
+    """Sub-sampling step that keeps a whole-image comparison inside `budget` pixels.
+
+    The safeguards below are statistics over the frame, so they can be read off a regular
+    sample of it rather than off every pixel. Taking a STRIDE and not a resize is the point: a
+    downscale averages a halo away with its neighbours, which is exactly the thing being
+    measured, while a stride keeps the pixels intact and just looks at fewer of them.
+    """
+    h, w = shape[:2]
+    return max(1, int(np.ceil(np.sqrt((h * w) / float(max(1, budget))))))
+
+
+def acutance_ratio(face_rgb: np.ndarray, frame_rgb: np.ndarray, face_mask: np.ndarray,
+                   sigma: float = 1.6) -> float:
+    """How much sharper is a restored face than the photograph it is being pasted into?
+
+    Mean high-pass magnitude under the face mask, over the same measured in the band outside it.
+    Both readings come from the SAME crop at the same scale, so exposure, subject and resolution
+    cancel and only sharpness is left. Returns 1.0 when there is not enough of either region to
+    measure, so the caller's cap can never fire on a degenerate crop.
+    """
+    def _hp(img: np.ndarray) -> np.ndarray:
+        l = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)[:, :, 0].astype(np.float32)
+        return np.abs(l - cv2.GaussianBlur(l, (0, 0), sigmaX=float(sigma)))
+
+    m = np.clip(face_mask, 0.0, 1.0)
+    inner = (m > 0.6).astype(np.float32)
+    outer = (m < 0.05).astype(np.float32)
+    if float(inner.sum()) < 64.0 or float(outer.sum()) < 64.0:
+        return 1.0
+    face_a = float((_hp(face_rgb) * inner).sum() / float(inner.sum()))
+    frame_a = float((_hp(frame_rgb) * outer).sum() / float(outer.sum()))
+    return float(face_a / max(frame_a, 0.5))
 
 
 def overshoot_ratio(before: np.ndarray, after: np.ndarray, threshold: float = 60.0) -> float:
     """Fraction of luminance pixels whose change exceeds `threshold` (halo/ringing indicator)."""
-    lb = cv2.cvtColor(before, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    la = cv2.cvtColor(after, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    if lb.shape != la.shape:
+    k = _stride_for(before.shape)
+    lb = cv2.cvtColor(before[::k, ::k], cv2.COLOR_RGB2GRAY).astype(np.float32)
+    la = cv2.cvtColor(after[::k, ::k], cv2.COLOR_RGB2GRAY).astype(np.float32)
+    if lb.shape != la.shape:                      # only when the stages changed the size
         la = cv2.resize(la, (lb.shape[1], lb.shape[0]))
     return float((np.abs(la - lb) > threshold).mean())
 
@@ -238,7 +397,8 @@ def reinject_texture(blended: np.ndarray, original: np.ndarray, amount: float = 
     return np.clip(b + amount * skin * orig_high, 0, 255).astype(np.uint8)
 
 
-def skin_clean(rgb: np.ndarray, face_boxes: List, strength: float) -> np.ndarray:
+def skin_clean(rgb: np.ndarray, face_boxes: List, strength: float,
+               mask: Optional[np.ndarray] = None) -> np.ndarray:
     """Even out skin without erasing it.
 
     Edge-preserving smoothing, blended back only under a skin-AND-face mask, so the grain and
@@ -248,17 +408,23 @@ def skin_clean(rgb: np.ndarray, face_boxes: List, strength: float) -> np.ndarray
     """
     if strength <= 0.02 or not face_boxes:
         return rgb
-    face = face_region_mask(rgb.shape, face_boxes)
+    face = face_region_mask(rgb.shape, face_boxes) if mask is None else mask
     if face.max() <= 0:
         return rgb
     s = float(max(0.0, min(1.0, strength)))
-    mask = (np.clip(face * _skin_mask(rgb), 0.0, 1.0) * (0.70 * s))[..., None]
+    blend = (np.clip(face * _skin_mask(rgb), 0.0, 1.0) * (0.70 * s))[..., None]
     smooth = cv2.bilateralFilter(rgb, d=9, sigmaColor=int(22 + 34 * s), sigmaSpace=9)
-    out = rgb.astype(np.float32) * (1.0 - mask) + smooth.astype(np.float32) * mask
-    return np.clip(out, 0, 255).astype(np.uint8)
+    out = rgb.astype(np.float32) * (1.0 - blend) + smooth.astype(np.float32) * blend
+    # This one already composites, and where `blend` is exactly zero it is already exact. The
+    # measured max-1 leak is the truncation: the fringe of the Gaussian feather carries values
+    # around 1e-8, and rgb * (1 - 1e-8) truncates one level down. One level, along the whole
+    # fringe, ending at the crop edge. composite_masked rounds, which removes it. The bilateral
+    # above is still evaluated over the whole piece, but only for cost - its result is discarded
+    # wherever blend is zero, so it cannot leak.
+    return composite_masked(rgb, np.clip(out, 0, 255).astype(np.uint8), face)
 
 
-def chroma_cleanup(rgb: np.ndarray, amount: float) -> np.ndarray:
+def chroma_cleanup(rgb: np.ndarray, amount: float, factor: Optional[int] = None) -> np.ndarray:
     """Remove low-frequency colour blotching, leaving luminance untouched.
 
     Shadow noise - the kind that only becomes visible once a dark photo is brightened - surfaces
@@ -274,7 +440,10 @@ def chroma_cleanup(rgb: np.ndarray, amount: float) -> np.ndarray:
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     h, w = a.shape[:2]
-    f = max(2, int(round(2 + 4 * k)))
+    # `factor` is passed in on the chunked path so every tile blurs the chroma at the same
+    # scale. Derived per tile it would depend on the tile's size, and the last, narrower column
+    # of tiles would be cleaned harder than the rest.
+    f = max(2, int(round(2 + 4 * k))) if factor is None else max(2, int(factor))
     sw, sh = max(1, w // f), max(1, h // f)
 
     def clean(ch):
@@ -289,8 +458,31 @@ def chroma_cleanup(rgb: np.ndarray, amount: float) -> np.ndarray:
     return cv2.cvtColor(merged, cv2.COLOR_LAB2RGB)
 
 
-def auto_exposure(rgb: np.ndarray, target: float = 0.46,
-                  max_gain: float = 3.2) -> "tuple[np.ndarray, float]":
+def plan_exposure(rgb: np.ndarray, target: float = 0.46,
+                  max_gain: float = 3.2) -> "Optional[tuple[float, float]]":
+    """Measure the exposure correction this photo needs: `(gamma, black_point)`, or None.
+
+    Split out of `auto_exposure` so a large photo can measure once and correct per tile. Both
+    numbers survive being taken from a downscaled proxy: a mean is preserved by area
+    downscaling, and the black point is a percentile of `L ** gamma`, which - raising to a power
+    being monotonic - is exactly `percentile(L) ** gamma`. So this stays a measurement of the
+    whole frame no matter how small a copy of it is handed in.
+    """
+    l = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)[:, :, 0].astype(np.float32) / 255.0
+    mean = float(l.mean())
+    if mean >= target - 0.02 or mean <= 0.0:
+        return None
+    # gamma < 1 brightens; the floor caps how much we are willing to invent.
+    gamma = float(np.log(max(target, 1e-3)) / np.log(max(mean, 0.02)))
+    gamma = min(1.0, max(1.0 / max_gain, gamma))
+    # Black point: under-exposed frames are usually veiled as well as dark.
+    lo = float(np.percentile(np.power(np.clip(l, 0.0, 1.0), gamma), 0.5))
+    return gamma, lo
+
+
+def auto_exposure(rgb: np.ndarray, target: float = 0.46, max_gain: float = 3.2,
+                  plan: "Optional[tuple[float, float]]" = None,
+                  local_contrast: Optional[Callable] = None) -> "tuple[np.ndarray, float]":
     """Rescue a badly under-exposed photo, before anything else looks at it.
 
     An indoor phone photo at night comes back muddy and grey no matter how well the face is
@@ -300,29 +492,26 @@ def auto_exposure(rgb: np.ndarray, target: float = 0.46,
     contrast that under-exposure flattens, and puts back some of the chroma a sensor fails to
     record in the dark (lifting luminance alone leaves everything grey).
 
-    Returns the corrected image and how much lift was applied (0.0 = untouched).
+    Pass `plan` (and `local_contrast` in place of the CLAHE) to apply one whole-frame correction to
+    a tile. Returns the corrected image and how much lift was applied (0.0 = untouched).
     """
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-    l = lab[:, :, 0] / 255.0
-    mean = float(l.mean())
-    if mean >= target - 0.02 or mean <= 0.0:
+    if plan is None:
+        plan = plan_exposure(rgb, target, max_gain)
+    if plan is None:
         return rgb, 0.0
+    gamma, lo = plan
 
-    # gamma < 1 brightens; the floor caps how much we are willing to invent.
-    gamma = float(np.log(max(target, 1e-3)) / np.log(max(mean, 0.02)))
-    gamma = min(1.0, max(1.0 / max_gain, gamma))
-    lifted = np.power(np.clip(l, 0.0, 1.0), gamma)
-
-    # Black point: under-exposed frames are usually veiled as well as dark.
-    lo = float(np.percentile(lifted, 0.5))
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lifted = np.power(np.clip(lab[:, :, 0] / 255.0, 0.0, 1.0), gamma)
     lifted = np.clip((lifted - lo) / max(1e-3, 1.0 - lo), 0.0, 1.0)
 
     lab[:, :, 0] = lifted * 255.0
     out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
     l2, a2, b2 = cv2.split(cv2.cvtColor(out, cv2.COLOR_RGB2LAB))
-    out = cv2.cvtColor(cv2.merge([cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8)).apply(l2),
-                                  a2, b2]), cv2.COLOR_LAB2RGB)
+    l2 = (cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8)).apply(l2)
+          if local_contrast is None else local_contrast(l2))
+    out = cv2.cvtColor(cv2.merge([l2, a2, b2]), cv2.COLOR_LAB2RGB)
 
     lift = 1.0 - gamma
     hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV).astype(np.float32)
@@ -331,7 +520,9 @@ def auto_exposure(rgb: np.ndarray, target: float = 0.46,
     return out, round(float(lift), 3)
 
 
-def body_clarity(rgb: np.ndarray, exclude_mask: Optional[np.ndarray], strength: float) -> np.ndarray:
+def body_clarity(rgb: np.ndarray, exclude_mask: Optional[np.ndarray], strength: float,
+                 edge_hi: Optional[float] = None, soft_radius: float = 0.0,
+                 soft_gain: float = 0.0) -> np.ndarray:
     """Give shape back to everything that is NOT a face: hands, clothing, objects, background.
 
     Only the face goes through the face model; the rest of the frame is whatever the upscaler
@@ -347,10 +538,12 @@ def body_clarity(rgb: np.ndarray, exclude_mask: Optional[np.ndarray], strength: 
         if float(mask.max()) <= 0.01:
             return rgb
     return edge_aware_sharpen(rgb, strength=strength, protect_skin=False,
-                              region_mask=mask, halo_limit=12.0)
+                              region_mask=mask, halo_limit=12.0, edge_hi=edge_hi,
+                              soft_radius=soft_radius, soft_gain=soft_gain)
 
 
-def soft_glow(rgb: np.ndarray, face_boxes: List, amount: float) -> np.ndarray:
+def soft_glow(rgb: np.ndarray, face_boxes: List, amount: float,
+              mask: Optional[np.ndarray] = None) -> np.ndarray:
     """Diffused highlight bloom on skin - the "lit from within" look of a retouched portrait.
 
     A screen blend against a blurred copy, held to skin inside the face and kept low, so it
@@ -359,25 +552,31 @@ def soft_glow(rgb: np.ndarray, face_boxes: List, amount: float) -> np.ndarray:
     """
     if amount <= 0.02 or not face_boxes:
         return rgb
-    face = face_region_mask(rgb.shape, face_boxes)
+    face = face_region_mask(rgb.shape, face_boxes) if mask is None else mask
     if face.max() <= 0:
         return rgb
     a = float(max(0.0, min(1.0, amount)))
-    mask = (np.clip(face * _skin_mask(rgb), 0.0, 1.0) * a)[..., None]
+    blend = (np.clip(face * _skin_mask(rgb), 0.0, 1.0) * a)[..., None]
     span = max(b.w for b in face_boxes)
     blur = cv2.GaussianBlur(rgb, (0, 0), sigmaX=max(2.0, span / 22.0)).astype(np.float32) / 255.0
     base = rgb.astype(np.float32) / 255.0
     screen = 1.0 - (1.0 - base) * (1.0 - blur)
-    out = base * (1.0 - mask) + screen * mask
-    return np.clip(out * 255.0, 0, 255).astype(np.uint8)
+    out = base * (1.0 - blend) + screen * blend
+    # /255 then *255 in float32 does not round-trip: at blend = 0 a pixel of 137 comes back as
+    # 136.99998 and truncates to 136. One level, over the whole piece, stopping at the crop edge.
+    return composite_masked(rgb, np.clip(out * 255.0, 0, 255).astype(np.uint8), face)
 
 
 # ---------------------------------------------------------------------------------------
 # photographic finish — this is what makes the result read as "beautified"
 # ---------------------------------------------------------------------------------------
-def _neutral_white_balance(rgb: np.ndarray, amount: float) -> np.ndarray:
+def _neutral_white_balance(rgb: np.ndarray, amount: float,
+                           means: Optional[np.ndarray] = None) -> np.ndarray:
     f = rgb.astype(np.float32)
-    means = f.reshape(-1, 3).mean(axis=0)
+    # The means MUST come from the whole frame. A tile of sky and a tile of skin have different
+    # colour casts, so per-tile means would white-balance each one to a different place and put
+    # a hard colour step down the join. On the chunked path they are measured once and passed.
+    means = f.reshape(-1, 3).mean(axis=0) if means is None else np.asarray(means, np.float32)
     gray = float(means.mean())
     for c in range(3):
         if means[c] > 1e-3:
@@ -386,25 +585,42 @@ def _neutral_white_balance(rgb: np.ndarray, amount: float) -> np.ndarray:
     return np.clip(f, 0, 255).astype(np.uint8)
 
 
-def premium_finish(rgb: np.ndarray, tone_depth: float, is_grayscale: bool = False) -> np.ndarray:
-    """Subtle DSLR-style tone finish. `tone_depth` 0..1 scales intensity. Every term is bounded."""
+def tone_curve_lut(tone_depth: float) -> np.ndarray:
+    """The finish's luminance curve as a 256-entry table: highlights, shadows, midtone S.
+
+    Every term is pointwise on an 8-bit L channel, so a table is not an approximation of the
+    arithmetic below - it is the same arithmetic, evaluated 256 times instead of forty million.
+    Pulling it out also lets the local-contrast pass measure its histograms on the L this curve
+    produces, which is the L it will actually be applied to.
+    """
+    t = float(max(0.0, min(1.0, tone_depth)))
+    l = np.arange(256, dtype=np.float32) / 255.0
+    hi = np.clip((l - 0.82) / 0.18, 0, 1)          # highlight recovery: soft rolloff near the top
+    l = l - hi * hi * (0.06 * t)
+    l = np.where(l < 0.5, np.power(np.clip(l * 2, 0, 1), 1.0 - 0.12 * t) / 2.0, l)  # shadow lift
+    l = l + (0.10 * t) * np.sin((l - 0.5) * np.pi)  # midtone S-curve for depth
+    return np.clip(l, 0, 1).astype(np.float32) * 255.0
+
+
+def premium_finish(rgb: np.ndarray, tone_depth: float, is_grayscale: bool = False,
+                   wb_means: Optional[np.ndarray] = None,
+                   local_contrast: Optional[Callable] = None) -> np.ndarray:
+    """Subtle DSLR-style tone finish. `tone_depth` 0..1 scales intensity. Every term is bounded.
+
+    `wb_means` and `local_contrast` are the two whole-frame measurements this stage makes,
+    supplied from outside when it runs per tile: the white-balance means, and a CLAHE whose
+    histograms were read from the whole frame (chunked.ClaheField). Everything else here is a
+    pointwise curve, which is identical on a tile by construction and needs nothing.
+    """
     t = float(max(0.0, min(1.0, tone_depth)))
     out = rgb
     if not is_grayscale:
-        out = _neutral_white_balance(out, amount=0.25 * t)
+        out = _neutral_white_balance(out, amount=0.25 * t, means=wb_means)
 
-    lab = cv2.cvtColor(out, cv2.COLOR_RGB2LAB).astype(np.float32)
-    l = lab[:, :, 0] / 255.0
-
-    # Highlight recovery: soft rolloff near the top.
-    hi = np.clip((l - 0.82) / 0.18, 0, 1)
-    l = l - hi * hi * (0.06 * t)
-    # Shadow lift: gentle gamma in the low range.
-    l = np.where(l < 0.5, np.power(np.clip(l * 2, 0, 1), 1.0 - 0.12 * t) / 2.0, l)
-    # Midtone S-curve for controlled contrast/depth.
-    l = l + (0.10 * t) * np.sin((l - 0.5) * np.pi)
-    lab[:, :, 0] = np.clip(l, 0, 1) * 255.0
-    out = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    # Highlight recovery, shadow lift and the midtone S-curve, in one table (tone_curve_lut).
+    l, a, b = cv2.split(cv2.cvtColor(out, cv2.COLOR_RGB2LAB))
+    l = cv2.LUT(l, tone_curve_lut(t)).astype(np.uint8)
+    out = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2RGB)
 
     # Controlled vibrance (skin-protected, so faces never go orange).
     if not is_grayscale and t > 0.05:
@@ -419,8 +635,11 @@ def premium_finish(rgb: np.ndarray, tone_depth: float, is_grayscale: bool = Fals
     # A whisper of local contrast (lens-like microcontrast).
     lab2 = cv2.cvtColor(out, cv2.COLOR_RGB2LAB)
     l2, a2, b2 = cv2.split(lab2)
-    clahe = cv2.createCLAHE(clipLimit=1.0 + 0.6 * t, tileGridSize=(8, 8))
-    l2 = clahe.apply(l2)
+    # Per tile, CLAHE would build a fresh histogram for each one and print its grid across the
+    # photo as brightness steps. `local_contrast` is the same algorithm with its histograms read
+    # once from the whole frame, so no two tiles can disagree. See chunked.ClaheField.
+    l2 = (cv2.createCLAHE(clipLimit=1.0 + 0.6 * t, tileGridSize=(8, 8)).apply(l2)
+          if local_contrast is None else local_contrast(l2))
     return cv2.cvtColor(cv2.merge([l2, a2, b2]), cv2.COLOR_LAB2RGB)
 
 
@@ -436,10 +655,11 @@ class SafetyReport:
 
 
 def _color_shift(reference: np.ndarray, output: np.ndarray) -> float:
-    ref = cv2.cvtColor(reference, cv2.COLOR_RGB2LAB).astype(np.float32)
-    out = output
-    if out.shape[:2] != reference.shape[:2]:
-        out = cv2.resize(out, (reference.shape[1], reference.shape[0]))
+    k = _stride_for(reference.shape)
+    ref = cv2.cvtColor(reference[::k, ::k], cv2.COLOR_RGB2LAB).astype(np.float32)
+    out = output[::k, ::k]
+    if out.shape[:2] != ref.shape[:2]:
+        out = cv2.resize(out, (ref.shape[1], ref.shape[0]))
     out = cv2.cvtColor(out, cv2.COLOR_RGB2LAB).astype(np.float32)
     da = np.abs(ref[:, :, 1] - out[:, :, 1]).mean()
     db = np.abs(ref[:, :, 2] - out[:, :, 2]).mean()

@@ -3,9 +3,33 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Beautify — AI Image Enhancer</title>
-<meta name="description" content="Upload a photo and get a genuinely better version back. Face restoration, detail recovery, grain removal and exposure rescue — processed locally." />
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+<title>Khushify AI — AI-Powered Image Enhancement &amp; Beautification</title>
+<meta name="description" content="Khushify AI turns any photo into its best version — face restoration, detail recovery, grain removal and exposure rescue, all processed locally on your own machine." />
+<meta name="theme-color" content="#b65246" />
+
+<!-- Icons — the real Khushify AI emblem set, served from /static/assets -->
+<link rel="icon" href="/static/assets/khushify-ai-favicon-48.webp" type="image/webp" sizes="48x48" />
+<link rel="icon" href="/static/assets/khushify-ai-favicon-192.webp" type="image/webp" sizes="192x192" />
+<link rel="apple-touch-icon" href="/static/assets/khushify-ai-app-icon-512.webp" sizes="512x512" />
+<link rel="manifest" href="/static/site.webmanifest" />
+
+<!-- Social cards. The lockup is 899x900 (near-square), so `summary` renders it
+     correctly; `summary_large_image` would letterbox it into a 2:1 crop. -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Khushify AI" />
+<meta property="og:title" content="Khushify AI — AI-Powered Image Enhancement &amp; Beautification" />
+<meta property="og:description" content="Upload a photo and get a genuinely better version back. Face restoration, detail recovery, grain removal and exposure rescue — processed locally, with nothing uploaded anywhere." />
+<meta property="og:image" content="/static/assets/khushify-ai-logo-transparent.webp" />
+<meta property="og:image:type" content="image/webp" />
+<meta property="og:image:width" content="899" />
+<meta property="og:image:height" content="900" />
+<meta property="og:image:alt" content="Khushify AI — AI-powered image enhancement and beautification" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="Khushify AI — AI-Powered Image Enhancement &amp; Beautification" />
+<meta name="twitter:description" content="Upload a photo and get a genuinely better version back. Face restoration, detail recovery, grain removal and exposure rescue — processed locally." />
+<meta name="twitter:image" content="/static/assets/khushify-ai-logo-transparent.webp" />
+<meta name="twitter:image:alt" content="Khushify AI — AI-powered image enhancement and beautification" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -16,11 +40,12 @@
 <!-- ============================================================ HEADER -->
 <header class="site-header" id="site-header">
   <div class="container header-inner">
-    <a class="brand" href="#top" aria-label="Beautify home">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l2.1 5.3 5.3 2.1-5.3 2.1L12 17.4l-2.1-5.3L4.6 10l5.3-2.1z" fill="currentColor"/><circle cx="18.5" cy="17.5" r="2" fill="currentColor" opacity=".7"/></svg>
-      </span>
-      <span class="brand-name">Beautify</span>
+    <!-- The logo lockup on its own: it already contains the name and the tagline, so a
+         plate behind it or a second "Khushify AI" beside it would only duplicate it. -->
+    <a class="brand" href="#top" aria-label="Khushify AI — home">
+      <img class="brand-logo" src="/static/assets/khushify-ai-logo-transparent.webp"
+           alt="Khushify AI" width="84" height="84" loading="eager" decoding="async"
+           fetchpriority="high" />
     </a>
 
     <nav class="site-nav" id="site-nav" aria-label="Primary">
@@ -59,7 +84,7 @@
     <div class="hero-copy">
       <p class="eyebrow reveal" data-reveal>
         <span class="eyebrow-dot" aria-hidden="true"></span>
-        AI-POWERED PHOTO ENHANCEMENT
+        AI-POWERED IMAGE ENHANCEMENT &amp; BEAUTIFICATION
       </p>
 
       <h1 class="hero-title reveal" data-reveal data-delay="1">
@@ -68,8 +93,9 @@
       </h1>
 
       <p class="hero-sub reveal" data-reveal data-delay="2">
-        Restore faces, recover detail, clear grain and rescue exposure — intelligent
-        enhancement tuned for natural, high-quality results. One click, nothing to configure.
+        Khushify AI restores faces, recovers detail, clears grain and rescues exposure —
+        enhancement tuned for natural, high-quality results, finished with a premium look you
+        can change or switch off. One click, nothing you have to configure.
       </p>
 
       <div class="hero-cta reveal" data-reveal data-delay="3">
@@ -90,7 +116,7 @@
         <div class="ws-head">
           <div>
             <h2 class="ws-title">Enhance your photo</h2>
-            <p class="ws-sub">AI-powered image improvement</p>
+            <p class="ws-sub">AI-powered enhancement &amp; beautification</p>
           </div>
           <span class="ws-badge" aria-hidden="true">AI</span>
         </div>
@@ -110,7 +136,7 @@
             <p class="drop-title">Drop an image here</p>
             <p class="drop-sub">or <span class="link">browse from your device</span></p>
             <p class="drop-hint">You can also paste with <kbd>Ctrl</kbd> + <kbd>V</kbd></p>
-            <p class="drop-meta">JPG &middot; PNG &middot; WebP &middot; up to <span id="max-mb">20</span> MB</p>
+            <p class="drop-meta">JPG &middot; PNG &middot; WebP &middot; up to <span id="max-mb">64</span> MB</p>
             <input type="file" id="file" accept="image/jpeg,image/png,image/webp" hidden />
           </div>
         </section>
@@ -144,6 +170,15 @@
               </span>
             </label>
           </fieldset>
+
+          <!-- app.js fills this from /api/filters and pre-selects the default look -->
+          <div class="looks" id="looks-pick" hidden>
+            <div class="looks-head">
+              <span class="looks-title">Finish</span>
+              <span class="looks-note" id="looks-note">A premium look is applied by default &mdash; you can change or remove it after.</span>
+            </div>
+            <div class="chips" id="looks-chips" role="radiogroup" aria-label="Beautification filter"></div>
+          </div>
 
           <div class="actions">
             <button class="btn btn-secondary" id="btn-change">Change</button>
@@ -195,6 +230,16 @@
             </div>
             <span class="cmp-label left">Before</span>
             <span class="cmp-label right">After</span>
+          </div>
+
+          <!-- Change the look without re-processing: the server re-renders from the
+               un-styled version it kept, so switching or removing it is near-instant. -->
+          <div class="looks done-looks" id="looks-done" hidden>
+            <div class="looks-head">
+              <span class="looks-title">Finish</span>
+              <span class="looks-note" id="looks-done-note">Switch the look or turn it off &mdash; your photo is not re-processed.</span>
+            </div>
+            <div class="chips" id="looks-done-chips" role="radiogroup" aria-label="Beautification filter"></div>
           </div>
 
           <!-- app.js fills this with <span class="stat"> chips -->
@@ -256,54 +301,23 @@
       <p class="kicker reveal" data-reveal>THE DIFFERENCE</p>
       <h2 class="reveal" data-reveal data-delay="1">See what the AI actually changes</h2>
       <p class="lede reveal" data-reveal data-delay="2">
-        Drag the divider. This is an illustration of the pipeline's stages — your own
-        before and after appears in the workspace once you enhance a photo.
+        A real photograph, one upload, nothing retouched by hand. Drag the divider &mdash; the
+        skin is evened out but the freckles and the moles are still there, and the wall, the
+        knit and every hair strand come up with it.
       </p>
     </div>
 
-    <div class="demo-wrap reveal-scale" data-reveal>
-      <div class="demo" id="demo" role="group" aria-label="Illustrative before and after comparison">
-        <svg class="demo-svg" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-          <defs>
-            <filter id="degrade">
-              <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" result="n"/>
-              <feColorMatrix in="n" type="saturate" values="0" result="g"/>
-              <feBlend in="SourceGraphic" in2="g" mode="overlay"/>
-              <feGaussianBlur stdDeviation="3"/>
-            </filter>
-            <linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#93a4c4"/><stop offset="1" stop-color="#c6c0b6"/>
-            </linearGradient>
-          </defs>
-          <rect width="800" height="420" fill="url(#sky1)"/>
-          <g filter="url(#degrade)">
-            <circle cx="400" cy="190" r="118" fill="#d3b49a"/>
-            <ellipse cx="400" cy="380" rx="215" ry="115" fill="#7b6a84"/>
-            <circle cx="357" cy="172" r="14" fill="#332e37"/><circle cx="443" cy="172" r="14" fill="#332e37"/>
-            <path d="M362 244q38 30 76 0" stroke="#8d5b58" stroke-width="12" fill="none" stroke-linecap="round"/>
-          </g>
-        </svg>
-
+    <div class="sample-wrap reveal-scale" data-reveal>
+      <div class="demo sample-frame" id="demo" role="group"
+           aria-label="Before and after on a real photograph">
+        <img class="sample-img" src="/static/samples/portrait-before.webp"
+             alt="The original photograph, before enhancement"
+             width="880" height="1100" loading="lazy" decoding="async" draggable="false" />
         <div class="demo-after" id="demo-after">
-          <svg class="demo-svg" viewBox="0 0 800 420" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-            <defs>
-              <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="#7ea9ea"/><stop offset="1" stop-color="#f5e9de"/>
-              </linearGradient>
-              <radialGradient id="skin2" cx="45%" cy="35%">
-                <stop offset="0" stop-color="#ffdec3"/><stop offset="1" stop-color="#e7ae85"/>
-              </radialGradient>
-            </defs>
-            <rect width="800" height="420" fill="url(#sky2)"/>
-            <circle cx="400" cy="190" r="118" fill="url(#skin2)"/>
-            <ellipse cx="400" cy="380" rx="215" ry="115" fill="#6d4fa8"/>
-            <circle cx="357" cy="172" r="14" fill="#1b1622"/><circle cx="443" cy="172" r="14" fill="#1b1622"/>
-            <circle cx="362" cy="167" r="4.5" fill="#fff" opacity=".95"/><circle cx="448" cy="167" r="4.5" fill="#fff" opacity=".95"/>
-            <path d="M362 244q38 32 76 0" stroke="#c0504d" stroke-width="12" fill="none" stroke-linecap="round"/>
-            <path d="M328 132q72 -34 144 0" stroke="#3a2f45" stroke-width="9" fill="none" stroke-linecap="round"/>
-          </svg>
+          <img class="sample-img" src="/static/samples/portrait-after.webp"
+               alt="The same photograph after enhancement"
+               width="880" height="1100" loading="lazy" decoding="async" draggable="false" />
         </div>
-
         <div class="demo-handle" id="demo-handle" role="slider" tabindex="0"
              aria-label="Comparison position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
           <span class="handle-line"></span>
@@ -314,11 +328,12 @@
         <span class="cmp-label left">Before</span>
         <span class="cmp-label right">After</span>
       </div>
-
-      <ul class="demo-tags">
-        <li>Sharper detail</li><li>Grain removed</li><li>Balanced tone</li><li>Restored faces</li>
-      </ul>
     </div>
+
+    <ul class="demo-tags reveal" data-reveal>
+      <li>Face restored</li><li>Skin evened, texture kept</li><li>Hair &amp; knit recovered</li>
+      <li>2&times; upscaled</li>
+    </ul>
   </div>
 </section>
 
@@ -577,13 +592,14 @@
 <footer class="site-footer">
   <div class="container footer-grid">
     <div class="footer-brand reveal" data-reveal>
+      <!-- The emblem rather than the full lockup: this sits on --surface-dark, where the
+           lockup's near-black "Khushify" would be invisible. The emblem is rose-gold
+           throughout, so it reads on the dark. -->
       <span class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l2.1 5.3 5.3 2.1-5.3 2.1L12 17.4l-2.1-5.3L4.6 10l5.3-2.1z" fill="currentColor"/></svg>
-        </span>
-        <span class="brand-name">Beautify</span>
+        <img class="brand-logo" src="/static/assets/khushify-ai-app-icon-512.webp"
+             alt="Khushify AI" width="58" height="58" loading="lazy" decoding="async" />
       </span>
-      <p>AI-powered enhancement for clearer, better-looking photographs — running entirely on your own machine, with nothing uploaded anywhere.</p>
+      <p>Khushify AI is AI-powered enhancement for clearer, better-looking photographs — running entirely on your own machine, with nothing uploaded anywhere.</p>
     </div>
     <div class="footer-col reveal" data-reveal data-delay="1">
       <h4>Product</h4>
@@ -599,7 +615,7 @@
     </div>
   </div>
   <div class="container footer-bottom">
-    <span>&copy; <span id="year">2026</span> Beautify. All enhancement runs on this machine.</span>
+    <span>&copy; <span id="year">2026</span> Khushify AI. All enhancement runs on this machine.</span>
     <span class="footer-note">Runs locally &middot; No account &middot; No tracking</span>
   </div>
 </footer>

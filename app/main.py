@@ -2,16 +2,19 @@
 
     GET  /                      the web UI
     GET  /health                liveness + which models are loaded
+    GET  /api/filters           the premium looks, and which one is applied by default
     POST /api/enhance           multipart upload -> 202 with a job id
     GET  /api/jobs/{id}         status / progress
     GET  /api/jobs/{id}/result  the beautified image
     GET  /api/jobs/{id}/original  the original (used by the before/after slider)
-    DELETE /api/jobs/{id}       delete both files now
+    POST /api/jobs/{id}/filter  swap the look, or remove it -> 202, poll the same job
+    DELETE /api/jobs/{id}       delete the files now
 
 There is no second service to run: the model inference happens in this process.
 """
 from __future__ import annotations
 
+import mimetypes
 import os
 import time
 import uuid
@@ -27,16 +30,19 @@ from .errors import (AppError, CorruptedImage, FileTooLarge, ModelsUnavailable,
                      UnsupportedImageFormat)
 from .jobs import Job, JobStore
 from .logging_utils import configure, get_logger
-from .pipeline.beautify import MODES, beautify
+from .pipeline import filters
+from .pipeline.beautify import MODES, beautify, restyle
 from .pipeline.registry import ModelRegistry
-from .validation import MIME_BY_FORMAT, decode_and_normalize
+from .validation import MIME_BY_FORMAT, decode_and_normalize, compress_heavy_image
 
 settings = get_settings()
 configure(settings.LOG_LEVEL)
 log = get_logger("api")
 
 registry = ModelRegistry(settings)
-store = JobStore(settings)
+# `reclaim` runs between jobs: it hands the accelerator's cache back so the next job in the
+# queue starts from a clean slate rather than on top of the last one's peak.
+store = JobStore(settings, reclaim=lambda: registry.release())
 
 WEB_DIR = os.path.join(ROOT, "web")
 
@@ -59,7 +65,14 @@ async def lifespan(_: FastAPI):
     store.shutdown()
 
 
-app = FastAPI(title="Beautify", version="1.0.0", docs_url="/docs", lifespan=lifespan)
+# Python ships no mapping for .webp on some platforms (Windows among them), and StaticFiles
+# then serves the brand assets as application/octet-stream. Browsers sniff an <img> and render
+# it anyway, so the site looks fine — but link-preview crawlers and the PWA manifest reject a
+# non-image type, which is exactly where the logo is supposed to earn its keep.
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+app = FastAPI(title="Khushify AI", version="1.0.0", docs_url="/docs", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,19 +114,50 @@ def _work(job: Job) -> None:
     carrying the array over) is deliberate: a queue of pending 40-megapixel arrays would sit in
     memory for as long as the queue is deep, and a re-decode costs a fraction of the inference.
     """
-    decoded = decode_and_normalize(job.original_path, settings.MAX_INPUT_PIXELS)
+    decoded = decode_and_normalize(job.original_path, settings.MAX_INPUT_PIXELS,
+                                   settings.DOWNSCALE_OVERSIZE_INPUT)
     out_template = os.path.join(settings.DATA_DIRECTORY, f"{job.id}-result.{{ext}}")
     path, result = beautify(
         registry, settings, decoded, out_template,
         progress=lambda stage, pct, msg: store.progress(job, stage, pct, msg),
-        mode=job.mode,
+        mode=job.mode, look_id=job.look, should_stop=job.timed_out,
     )
     job.result_path = path
     job.result = result
 
 
+def _restyle_work(job: Job, look_id: str) -> None:
+    """Runs on the worker thread: re-render the saved base under a different look.
+
+    No decode of the original, no analysis, no models — just the look, over an image the job
+    already produced. This is what a look change costs, and it is why the default look can be
+    offered as a default rather than as a commitment.
+    """
+    out_template = os.path.join(settings.DATA_DIRECTORY,
+                                f"{job.id}-result-{job.result_version + 1}.{{ext}}")
+    previous = job.result_path
+    path, result = restyle(
+        settings, job.result, out_template, look_id,
+        progress=lambda stage, pct, msg: store.progress(job, stage, pct, msg),
+        should_stop=job.timed_out,
+    )
+    job.result_path = path
+    job.result = result
+    job.look = result.look
+    job.result_version += 1
+    if previous and previous != path:
+        _safe_remove(previous)
+
+
+@app.get("/api/filters")
+def filter_catalogue(mode: str = "beautify") -> dict:
+    """The looks on offer, and the one that applies when the caller does not choose."""
+    return {"success": True, "data": filters.catalogue(mode if mode in MODES else "beautify")}
+
+
 @app.post("/api/enhance", status_code=202)
-async def enhance(image: UploadFile = File(...), mode: str = Form("beautify")) -> JSONResponse:
+async def enhance(image: UploadFile = File(...), mode: str = Form("beautify"),
+                  filter: str = Form(None)) -> JSONResponse:
     # Refuse up front rather than queueing work that cannot produce a real result.
     if not settings.MOCK_MODE and not registry.status.ready:
         raise ModelsUnavailable(
@@ -143,11 +187,29 @@ async def enhance(image: UploadFile = File(...), mode: str = Form("beautify")) -
             raise CorruptedImage("The uploaded file is empty.")
 
         try:
-            decoded = decode_and_normalize(upload_path, settings.MAX_INPUT_PIXELS)
+            # A photo bigger than the pixel budget is fitted to it and accepted. Needing more
+            # room than the budget is a reason to work in chunks, not a reason to refuse the
+            # file — see validation.decode_and_normalize and pipeline/chunked.py.
+            decoded = decode_and_normalize(upload_path, settings.MAX_INPUT_PIXELS,
+                                           settings.DOWNSCALE_OVERSIZE_INPUT)
         except AppError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise UnsupportedImageFormat("That file could not be read as an image.") from exc
+
+        # Compress heavy images before processing (> 10 MB → lighter load for models)
+        compressed_path = os.path.join(settings.DATA_DIRECTORY, f"compressed-{uuid.uuid4().hex}")
+        final_upload_path, was_compressed = compress_heavy_image(
+            upload_path, compressed_path, size_threshold_bytes=10_000_000
+        )
+        if was_compressed:
+            _safe_remove(upload_path)
+            upload_path = final_upload_path
+            total = os.path.getsize(upload_path)  # update size after compression
+            log.info("image compressed: new size %s KB", total // 1024)
+        else:
+            _safe_remove(compressed_path)  # clean up unused path
+
     except Exception:
         _safe_remove(upload_path)
         raise
@@ -164,14 +226,50 @@ async def enhance(image: UploadFile = File(...), mode: str = Form("beautify")) -
 
     job.original_path = original_path
     job.mode = mode if mode in MODES else "beautify"
+    job.look = filters.resolve(filter, job.mode).id
     job.original_name = os.path.basename(image.filename or "image")
     job.original_mime = MIME_BY_FORMAT.get(decoded.detected_format, "image/jpeg")
     job.original_bytes = total
+    # Drives the job's deadline: a big photo is given the time it needs instead of a timeout
+    # sized for a small one.
+    job.megapixels = round(decoded.width * decoded.height / 1_000_000.0, 3)
 
     store.submit(job, _work)
-    log.info("job %s queued (%s, %sx%s, %s KB)", job.id, job.mode, decoded.width, decoded.height,
-             total // 1024)
+    log.info("job %s queued (%s, look=%s, %sx%s, %s MP, %s KB)", job.id, job.mode, job.look,
+             decoded.width, decoded.height, job.megapixels, total // 1024)
     return JSONResponse(status_code=202, content={"success": True, "data": job.to_public()})
+
+
+@app.post("/api/jobs/{job_id}/filter", status_code=202)
+def job_filter(job_id: str, filter: str = Form(...)) -> JSONResponse:
+    """Change this photo's look, or take it off — the default is never a one-way door.
+
+    Re-renders from the un-styled base the job kept, so nothing expensive happens: no decode of
+    the original, no analysis, no models. It still goes through the same queue as everything
+    else, because it is still image work and unmetered work is how a server ends up overloaded.
+    """
+    job = store.get_for_file(job_id)
+    if job.status != "completed" or job.result is None:
+        return _conflict("NOT_READY", "That photo has not finished processing yet.")
+    if not job.result.base_path or not os.path.exists(job.result.base_path):
+        return _conflict("NO_BASE", "The un-styled version of this photo is no longer available.")
+    if filter not in filters.BY_ID:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": {"code": "UNKNOWN_FILTER",
+                                                 "message": "That filter does not exist."}},
+        )
+    if not store.reopen(job):
+        return _conflict("IN_PROGRESS", "That job is still running.")
+
+    store.submit(job, _restyle_work, filter)
+    log.info("job %s re-styling to %s", job.id, filter)
+    return JSONResponse(status_code=202, content={"success": True, "data": job.to_public()})
+
+
+def _conflict(code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=409,
+                        content={"success": False, "error": {"code": code, "message": message}})
 
 
 @app.get("/api/jobs/{job_id}")
@@ -221,7 +319,7 @@ def job_delete(job_id: str):
             content={"success": False, "error": {"code": "IN_PROGRESS",
                                                  "message": "That job is still running."}},
         )
-    for path in (job.original_path, job.result_path):
+    for path in store.files_of(job):
         _safe_remove(path)
     job.expires_at = time.time() - 1
     store.sweep()

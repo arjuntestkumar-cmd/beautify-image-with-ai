@@ -19,9 +19,12 @@ services:
       PORT: "7860"
       # Uncomment to tune. Every value has a working default.
       # AUTO_UPSCALE_MAX_SIDE: "1600"    # lower = faster on big photos
-      # RESULT_RETENTION_MINUTES: "30"   # how long a result survives
-      # MAX_UPLOAD_BYTES: "20971520"     # 20 MB
-      # JOB_TIMEOUT_SECONDS: "900"
+      # RESULT_RETENTION_MINUTES: "30"   # how long a result survives (and how much disk is used)
+      # MAX_UPLOAD_BYTES: "67108864"     # 64 MB
+      # JOB_TIMEOUT_SECONDS: "900"       # floor; the real deadline scales with megapixels
+      # CHUNK_TILE_SIZE: "768"           # lower this first on a memory-starved box
+      # MODEL_CHUNK_TILE_SIZE: "384"     # same, for the super-resolution model
+      # MAX_QUEUED_JOBS: "64"            # how many people can wait before uploads are refused
 
     # Loading the models takes a while on a cold start, so the health check is
     # given a long grace period before its first failure counts.

@@ -64,3 +64,8 @@ class OutOfMemory(AppError):
 class ProcessingFailed(AppError):
     status_code = 500
     code = "PROCESSING_FAILED"
+
+
+class ProcessingTimeout(AppError):
+    status_code = 504
+    code = "TIMEOUT"

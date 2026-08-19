@@ -138,7 +138,9 @@ Set these under `environment:` in `docker-compose.yml`:
 | --- | --- | --- |
 | `AUTO_UPSCALE_MAX_SIDE` | `1600` | Lower it to make big photos faster (they skip the 2× upscale) |
 | `RESULT_RETENTION_MINUTES` | `30` | How long an original and result survive |
-| `MAX_UPLOAD_BYTES` | `20971520` | Upload ceiling |
+| `MAX_UPLOAD_BYTES` | `67108864` | Upload ceiling (64 MB) |
+| `CHUNK_TILE_SIZE` | `768` | Lower it first if the machine is memory-starved; peak memory scales with it |
+| `MAX_QUEUED_JOBS` | `64` | How many people can be waiting before uploads are refused |
 | `JOB_TIMEOUT_SECONDS` | `900` | Raise if slow hardware trips it |
 
 Do **not** raise `WORKER_CONCURRENCY` or add uvicorn workers: each one loads its own ~960 MB copy

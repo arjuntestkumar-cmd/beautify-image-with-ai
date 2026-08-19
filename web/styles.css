@@ -13,37 +13,41 @@
    Design tokens
 ==================================== */
 :root {
+
+  /* Warm neutrals, pulled from the logo's cream rather than a cold blue-grey. */
   --bg-primary: #ffffff;
-  --bg-secondary: #f6f8fd;
-  --bg-tint: #eef2fb;
+  --bg-secondary: #fcf7f3;
+  --bg-tint: #fbefe8;
   --surface: #ffffff;
-  --surface-hover: #f8faff;
-  --surface-dark: #070a12;
+  --surface-hover: #fdf9f6;
+  --surface-dark: #16100f;
 
-  --text-primary: #0d1426;
-  --text-secondary: #48526b;
-  --text-muted: #7b849c;
-  --text-invert: #eef2fb;
+  /* Ink taken from the wordmark. */
+  --text-primary: #1f1c1b;
+  --text-secondary: #5f4e49;
+  --text-muted: #7d675f;
+  --text-invert: #f8ede4;
 
-  --primary: #4f46e5;
-  --primary-light: #6366f1;
-  --secondary: #7c3aed;
-  --accent: #06b6d4;
-  --success: #0f9d63;
-  --warn: #b7791f;
-  --danger: #d64545;
+  /* Rose gold, measured off the emblem: hue ~8deg, the metallic ramp deep -> blush. */
+  --primary: #ab4a3e;
+  --primary-light: #cf6f61;
+  --secondary: #8d2c1f;
+  --accent: #e3b184;
+  --success: #16794b;
+  --warn: #8f5f0d;
+  --danger: #b8112b;
 
-  --grad-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #06b6d4 100%);
-  --grad-text: linear-gradient(120deg, #4f46e5 0%, #7c3aed 45%, #06b6d4 100%);
+  --grad-brand: linear-gradient(135deg, #7e2417 0%, #a5402f 28%, #b65246 52%, #9c3a2c 78%, #8d2c1f 100%);
+  --grad-text: linear-gradient(120deg, #8d2c1f 0%, #ab4a3e 45%, #c96354 100%);
 
-  --border: #e4e9f4;
-  --border-strong: #d3daea;
+  --border: #f1e4da;
+  --border-strong: #e3d1c6;
 
-  --shadow-sm: 0 1px 2px rgba(13, 20, 38, .05);
-  --shadow-md: 0 4px 16px rgba(13, 20, 38, .07);
-  --shadow-lg: 0 18px 48px rgba(13, 20, 38, .10);
-  --shadow-xl: 0 32px 80px rgba(13, 20, 38, .14);
-  --shadow-brand: 0 10px 30px rgba(79, 70, 229, .28);
+  --shadow-sm: 0 1px 2px rgba(72, 34, 26, .06);
+  --shadow-md: 0 4px 16px rgba(72, 34, 26, .08);
+  --shadow-lg: 0 18px 48px rgba(72, 34, 26, .12);
+  --shadow-xl: 0 32px 80px rgba(72, 34, 26, .16);
+  --shadow-brand: 0 10px 30px rgba(141, 44, 31, .28);
 
   --radius-sm: 10px;
   --radius-md: 14px;
@@ -51,12 +55,12 @@
   --radius-xl: 28px;
 
   --container-width: 1240px;
-  --header-h: 72px;
+  --header-h: 104px;
   --ease: cubic-bezier(.22, 1, .36, 1);
 
   --sparkle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2.2l2.3 5.9 5.9 2.3-5.9 2.3L12 18.6l-2.3-6.1L3.8 10.4l5.9-2.3z"/></svg>');
-  --tick: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%230f9d63" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>');
-  --cross: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%237b849c" stroke-width="3.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>');
+  --tick: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2316794b" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>');
+  --cross: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%237d675f" stroke-width="3.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>');
 }
 
 /* ====================================
@@ -101,7 +105,7 @@ kbd {
   background: var(--bg-tint); border: 1px solid var(--border); color: var(--text-secondary);
 }
 
-::selection { background: rgba(79, 70, 229, .17); }
+::selection { background: rgba(182, 82, 70, .17); }
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 6px; }
 
 .container { width: 100%; max-width: var(--container-width); margin: 0 auto; padding: 0 40px; }
@@ -136,7 +140,7 @@ kbd {
 .btn-lg { --btn-h: 54px; padding: 0 30px; font-size: 16px; }
 
 .btn-primary { background: var(--grad-brand); background-size: 160% 160%; color: #fff; box-shadow: var(--shadow-brand); }
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 34px rgba(79,70,229,.36); background-position: 100% 0; }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 34px rgba(141,44,31,.36); background-position: 100% 0; }
 .btn-primary:active { transform: translateY(0); }
 
 .btn-secondary { background: var(--surface); color: var(--text-primary); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
@@ -169,7 +173,7 @@ kbd {
   backdrop-filter: saturate(180%) blur(18px);
   -webkit-backdrop-filter: saturate(180%) blur(18px);
   border-bottom-color: var(--border);
-  box-shadow: 0 1px 20px rgba(13, 20, 38, .06);
+  box-shadow: 0 1px 20px rgba(72, 34, 26, .07);
 }
 
 .header-inner {
@@ -179,13 +183,23 @@ kbd {
   padding-right: max(40px, env(safe-area-inset-right));
 }
 
-.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; letter-spacing: -.02em; }
-.brand-mark {
-  width: 30px; height: 30px; border-radius: 9px; flex: none;
-  background: var(--grad-brand); color: #fff; display: grid; place-items: center;
-  box-shadow: var(--shadow-brand);
+/* The brand IS the logo artwork. No plate behind it and no text beside it — a tinted tile
+   under a transparent rose-gold lockup looks broken, and a second "Khushify AI" in Inter next
+   to the one already drawn in the logo's own serif reads as a duplicate. */
+.brand { display: inline-flex; align-items: center; text-decoration: none; }
+.brand-logo {
+  display: block; width: auto; flex: none;
+  /* The lockup is square: emblem over the name over the tagline, so the name gets barely a
+     fifth of the height. Rendered tests put the threshold where it resolves at ~80px, which
+     is what --header-h is sized around. */
+  height: 84px;
 }
-.brand-mark svg { width: 18px; height: 18px; }
+.brand-logo { transition: transform .2s var(--ease); }
+.brand:hover .brand-logo { transform: translateY(-1px); }
+
+/* The footer sits on --surface-dark, where the lockup's near-black "Khushify" disappears.
+   The emblem is rose-gold throughout, so it carries the brand there on its own. */
+.footer-brand .brand-logo { height: 58px; }
 
 .site-nav { display: flex; gap: 4px; margin-left: auto; }
 .nav-link {
@@ -193,7 +207,7 @@ kbd {
   font-size: 14.5px; font-weight: 500; color: var(--text-secondary);
   transition: color .2s, background .2s;
 }
-.nav-link:hover { color: var(--text-primary); background: rgba(79, 70, 229, .06); }
+.nav-link:hover { color: var(--text-primary); background: rgba(182, 82, 70, .06); }
 .nav-link.active { color: var(--primary); }
 .nav-link.active::after {
   content: ""; position: absolute; left: 14px; right: 14px; bottom: 3px;
@@ -214,7 +228,7 @@ kbd {
   animation: pulse 2.4s ease-in-out infinite;
 }
 @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-.pill.ok   { color: var(--success); background: rgba(15,157,99,.09);  border-color: rgba(15,157,99,.28); }
+.pill.ok   { color: var(--success); background: rgba(22,121,75,.09);  border-color: rgba(22,121,75,.28); }
 .pill.warn { color: var(--warn);    background: rgba(183,121,31,.09); border-color: rgba(183,121,31,.28); }
 .pill.bad  { color: var(--danger);  background: rgba(214,69,69,.09);  border-color: rgba(214,69,69,.28); }
 
@@ -237,10 +251,13 @@ kbd {
 .hero { position: relative; padding: calc(var(--header-h) + 72px) 0 96px; overflow: hidden; }
 
 .hero-bg { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
-.orb { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; }
-.orb-a { width: 520px; height: 520px; top: -140px; left: -120px; background: radial-gradient(circle, #6366f1, transparent 70%); animation: float1 22s ease-in-out infinite; }
-.orb-b { width: 460px; height: 460px; top: 40px; right: -140px; background: radial-gradient(circle, #7c3aed, transparent 70%); animation: float2 26s ease-in-out infinite; }
-.orb-c { width: 380px; height: 380px; bottom: -160px; left: 42%; background: radial-gradient(circle, #06b6d4, transparent 70%); opacity: .34; animation: float1 30s ease-in-out infinite reverse; }
+/* Lighter than the old indigo wash on purpose. The brand mark is itself rose-gold, so an
+   orb of the same family behind it left the logo sitting on its own colour with nothing to
+   separate them. The corner the logo occupies stays near-white; the warmth lives lower down. */
+.orb { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .34; }
+.orb-a { width: 520px; height: 520px; top: -210px; left: -190px; background: radial-gradient(circle, #efa997, transparent 70%); animation: float1 22s ease-in-out infinite; }
+.orb-b { width: 460px; height: 460px; top: 40px; right: -140px; background: radial-gradient(circle, #8d2c1f, transparent 70%); animation: float2 26s ease-in-out infinite; }
+.orb-c { width: 380px; height: 380px; bottom: -160px; left: 42%; background: radial-gradient(circle, #f5c9b5, transparent 70%); opacity: .34; animation: float1 30s ease-in-out infinite reverse; }
 @keyframes float1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(60px,40px) scale(1.08); } }
 @keyframes float2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-50px,50px) scale(1.06); } }
 
@@ -263,7 +280,7 @@ kbd {
 .eyebrow {
   display: inline-flex; align-items: center; gap: 9px;
   font-size: 12.5px; font-weight: 700; letter-spacing: .13em; color: var(--primary);
-  background: rgba(79,70,229,.07); border: 1px solid rgba(79,70,229,.16);
+  background: rgba(182,82,70,.07); border: 1px solid rgba(182,82,70,.16);
   padding: 8px 15px; border-radius: 999px; margin-bottom: 24px;
 }
 .eyebrow-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--grad-brand); animation: pulse 2.2s ease-in-out infinite; }
@@ -282,7 +299,7 @@ kbd {
 .hero-points li { display: flex; align-items: center; gap: 8px; }
 .hero-points li::before {
   content: ""; width: 15px; height: 15px; border-radius: 50%; flex: none;
-  background: rgba(15,157,99,.14) var(--tick) center/10px no-repeat;
+  background: rgba(22,121,75,.14) var(--tick) center/10px no-repeat;
 }
 
 .scroll-cue { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 1; }
@@ -304,7 +321,7 @@ kbd {
 }
 .workspace::before {
   content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
-  background: linear-gradient(135deg, rgba(79,70,229,.5), rgba(6,182,212,.32), transparent 60%);
+  background: linear-gradient(135deg, rgba(182,82,70,.5), rgba(227,140,123,.32), transparent 60%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
 }
@@ -327,13 +344,13 @@ kbd {
   transition: border-color .25s var(--ease), background .25s var(--ease), transform .25s var(--ease);
 }
 .drop:hover, .drop:focus-visible { border-color: var(--primary); transform: translateY(-2px); }
-.drop.over { border-color: var(--primary); border-style: solid; background: linear-gradient(180deg, #eef1ff, var(--surface)); transform: scale(1.01); }
+.drop.over { border-color: var(--primary); border-style: solid; background: linear-gradient(180deg, #fdefe1, var(--surface)); transform: scale(1.01); }
 .drop.over .drop-icon { transform: scale(1.12); }
 
 .drop-glow {
   position: absolute; width: 260px; height: 260px; border-radius: 50%; pointer-events: none;
   left: var(--mx, 50%); top: var(--my, 50%); transform: translate(-50%, -50%);
-  background: radial-gradient(circle, rgba(79,70,229,.13), transparent 65%);
+  background: radial-gradient(circle, rgba(182,82,70,.13), transparent 65%);
   opacity: 0; transition: opacity .3s;
 }
 .drop:hover .drop-glow { opacity: 1; }
@@ -367,7 +384,7 @@ kbd {
 
 .scanline {
   position: absolute; left: 0; right: 0; height: 26%;
-  background: linear-gradient(180deg, transparent, rgba(99,102,241,.28), transparent);
+  background: linear-gradient(180deg, transparent, rgba(227,140,123,.28), transparent);
   animation: scan 2.1s ease-in-out infinite;
 }
 @keyframes scan { 0% { top: -26%; } 100% { top: 100%; } }
@@ -393,7 +410,7 @@ kbd {
 }
 .mode:hover { background: var(--surface-hover); }
 .mode input { margin: 2px 0 0; accent-color: var(--primary); flex: none; }
-.mode:has(input:checked) { border-color: var(--primary); background: rgba(79,70,229,.05); box-shadow: 0 0 0 3px rgba(79,70,229,.08); }
+.mode:has(input:checked) { border-color: var(--primary); background: rgba(182,82,70,.05); box-shadow: 0 0 0 3px rgba(182,82,70,.08); }
 .mode:has(input:focus-visible) { outline: 2px solid var(--primary); outline-offset: 2px; }
 .mode-body { display: flex; flex-direction: column; gap: 2px; }
 .mode-name { font-weight: 650; font-size: 14px; }
@@ -416,7 +433,7 @@ kbd {
 .done-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 650; font-size: 14.5px; color: var(--success); }
 .done-icon {
   width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none;
-  background: rgba(15,157,99,.12); color: var(--success); animation: popIn .5s var(--ease) both;
+  background: rgba(22,121,75,.12); color: var(--success); animation: popIn .5s var(--ease) both;
 }
 .done-icon svg { width: 15px; height: 15px; }
 @keyframes popIn { 0% { transform: scale(.4); opacity: 0; } 60% { transform: scale(1.12); } 100% { transform: scale(1); opacity: 1; } }
@@ -435,7 +452,7 @@ kbd {
 .handle-line { position: absolute; inset: 0; background: rgba(255,255,255,.92); box-shadow: 0 0 0 1px rgba(0,0,0,.16); }
 .handle-grip {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-  width: 40px; height: 40px; border-radius: 50%; background: #fff; color: #0d1426;
+  width: 40px; height: 40px; border-radius: 50%; background: #fff; color: var(--text-primary);
   box-shadow: 0 3px 14px rgba(0,0,0,.3); display: grid; place-items: center;
 }
 .handle-grip svg { width: 19px; height: 19px; }
@@ -512,16 +529,16 @@ kbd {
 .card::before {
   content: ""; position: absolute; width: 300px; height: 300px; pointer-events: none;
   left: var(--mx, 50%); top: var(--my, 0%); transform: translate(-50%,-50%);
-  background: radial-gradient(circle, rgba(79,70,229,.10), transparent 62%);
+  background: radial-gradient(circle, rgba(182,82,70,.10), transparent 62%);
   opacity: 0; transition: opacity .3s;
 }
-.card:hover { transform: translateY(-6px); box-shadow: var(--shadow-lg); border-color: rgba(79,70,229,.28); }
+.card:hover { transform: translateY(-6px); box-shadow: var(--shadow-lg); border-color: rgba(182,82,70,.28); }
 .card:hover::before { opacity: 1; }
 .card-icon {
   width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center;
   margin-bottom: 18px; color: var(--primary);
-  background: linear-gradient(135deg, rgba(79,70,229,.11), rgba(6,182,212,.1));
-  border: 1px solid rgba(79,70,229,.16);
+  background: linear-gradient(135deg, rgba(182,82,70,.11), rgba(239,169,151,.1));
+  border: 1px solid rgba(182,82,70,.16);
 }
 .card-icon svg { width: 22px; height: 22px; }
 .card h3 { font-size: 17.5px; margin-bottom: 9px; }
@@ -533,7 +550,7 @@ kbd {
 .modes-section { background: var(--bg-primary); }
 .mode-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 940px; margin: 0 auto; }
 .mode-card { padding: 32px 30px; border-radius: var(--radius-lg); background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
-.mode-card:first-child { border-color: rgba(79,70,229,.3); box-shadow: 0 12px 40px rgba(79,70,229,.12); }
+.mode-card:first-child { border-color: rgba(182,82,70,.3); box-shadow: 0 12px 40px rgba(141,44,31,.12); }
 .mode-card h3 { font-size: 21px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
 .tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 4px 9px; border-radius: 7px; color: #fff; background: var(--grad-brand); }
 .mode-card > p { color: var(--text-secondary); font-size: 14.5px; margin-bottom: 20px; }
@@ -541,10 +558,10 @@ kbd {
 .ticks li { position: relative; padding-left: 28px; font-size: 14.5px; margin-bottom: 11px; color: var(--text-secondary); }
 .ticks li::before {
   content: ""; position: absolute; left: 0; top: 5px; width: 17px; height: 17px; border-radius: 50%;
-  background: rgba(15,157,99,.13) var(--tick) center/11px no-repeat;
+  background: rgba(22,121,75,.13) var(--tick) center/11px no-repeat;
 }
 .ticks li.off { color: var(--text-muted); }
-.ticks li.off::before { background: rgba(123,132,156,.13) var(--cross) center/10px no-repeat; }
+.ticks li.off::before { background: rgba(125,103,95,.13) var(--cross) center/10px no-repeat; }
 .ticks.big li { font-size: 15.5px; margin-bottom: 15px; }
 
 /* ====================================
@@ -569,12 +586,12 @@ kbd {
    Technology (dark)
 ==================================== */
 .tech { background: var(--surface-dark); color: var(--text-invert); overflow: hidden; }
-.tech .kicker { color: #8b93ff; }
-.tech .lede { color: #a7b0c8; }
+.tech .kicker { color: #efa997; }
+.tech .lede { color: #cbb6ad; }
 .tech-bg { position: absolute; inset: 0; pointer-events: none; }
 .tech-glow {
   position: absolute; width: 700px; height: 700px; top: -220px; right: -180px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(99,102,241,.35), transparent 65%); filter: blur(70px);
+  background: radial-gradient(circle, rgba(182,82,70,.35), transparent 65%); filter: blur(70px);
 }
 .tech-grid {
   position: absolute; inset: 0;
@@ -587,13 +604,13 @@ kbd {
 .tech-wrap { position: relative; z-index: 1; display: grid; grid-template-columns: 1.1fr .9fr; gap: 60px; align-items: center; }
 .tech h2 { font-size: clamp(30px, 3.4vw, 42px); margin-bottom: 16px; }
 .tech-list { margin-top: 30px; }
-.tech-list li { padding: 16px 0 16px 22px; border-left: 2px solid rgba(255,255,255,.12); font-size: 15px; color: #b6bed4; transition: border-color .3s; }
+.tech-list li { padding: 16px 0 16px 22px; border-left: 2px solid rgba(255,255,255,.12); font-size: 15px; color: #d3c0b7; transition: border-color .3s; }
 .tech-list li strong { color: #fff; font-weight: 650; }
-.tech-list li:hover { border-left-color: #6366f1; }
+.tech-list li:hover { border-left-color: var(--primary-light); }
 
 .tech-visual { display: grid; place-items: center; min-height: 340px; }
 .orbit { position: relative; width: 300px; height: 300px; }
-.core { position: absolute; inset: 38%; border-radius: 50%; background: var(--grad-brand); box-shadow: 0 0 60px rgba(99,102,241,.7); animation: breathe 4s ease-in-out infinite; }
+.core { position: absolute; inset: 38%; border-radius: 50%; background: var(--grad-brand); box-shadow: 0 0 60px rgba(207, 111, 97, .7) 70%, transparent); animation: breathe 4s ease-in-out infinite; }
 @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(255,255,255,.13); }
 .ring-1 { inset: 22%; animation: spin 16s linear infinite; }
@@ -617,7 +634,7 @@ kbd {
   background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-sm); color: var(--text-secondary);
   transition: transform .25s var(--ease), border-color .25s, color .25s, box-shadow .25s;
 }
-.chip:hover { transform: translateY(-3px); border-color: rgba(79,70,229,.35); color: var(--primary); box-shadow: var(--shadow-md); }
+.chip:hover { transform: translateY(-3px); border-color: rgba(182,82,70,.35); color: var(--primary); box-shadow: var(--shadow-md); }
 
 /* ====================================
    Privacy
@@ -627,10 +644,10 @@ kbd {
 .privacy-visual { display: grid; place-items: center; }
 .shield {
   width: 210px; height: 210px; border-radius: 50%; display: grid; place-items: center; color: var(--primary);
-  background: radial-gradient(circle at 50% 40%, rgba(79,70,229,.14), rgba(6,182,212,.06) 60%, transparent 72%);
+  background: radial-gradient(circle at 50% 40%, rgba(182,82,70,.14), rgba(239,169,151,.06) 60%, transparent 72%);
   position: relative;
 }
-.shield::after { content: ""; position: absolute; inset: 14%; border-radius: 50%; border: 1px dashed rgba(79,70,229,.32); animation: spin 30s linear infinite; }
+.shield::after { content: ""; position: absolute; inset: 14%; border-radius: 50%; border: 1px dashed rgba(182,82,70,.32); animation: spin 30s linear infinite; }
 .shield svg { width: 96px; height: 96px; }
 .privacy h2 { font-size: clamp(28px, 3.2vw, 40px); margin-bottom: 14px; }
 
@@ -640,7 +657,7 @@ kbd {
 .faq { background: var(--bg-primary); }
 .accordion { display: flex; flex-direction: column; gap: 12px; }
 .acc-item { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; transition: border-color .25s, box-shadow .25s; }
-.acc-item.open { border-color: rgba(79,70,229,.3); box-shadow: var(--shadow-md); }
+.acc-item.open { border-color: rgba(182,82,70,.3); box-shadow: var(--shadow-md); }
 .acc-q {
   width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px;
   padding: 20px 22px; background: none; border: 0; cursor: pointer; text-align: left;
@@ -665,21 +682,21 @@ kbd {
 .cta {
   position: relative; overflow: hidden; text-align: center;
   padding: 78px 40px; border-radius: var(--radius-xl);
-  background: linear-gradient(135deg, #0d1226 0%, #1a1a4e 55%, #0b2b3f 100%); color: #fff;
+  background: linear-gradient(135deg, #17100f 0%, #4a1a12 55%, #221f1f 100%); color: #fff;
 }
 .cta-glow {
   position: absolute; width: 620px; height: 620px; left: 50%; top: -50%; transform: translateX(-50%);
-  background: radial-gradient(circle, rgba(99,102,241,.5), transparent 62%); filter: blur(60px);
+  background: radial-gradient(circle, rgba(182,82,70,.5), transparent 62%); filter: blur(60px);
   animation: float1 18s ease-in-out infinite;
 }
 .cta h2 { position: relative; font-size: clamp(28px, 3.6vw, 42px); margin-bottom: 14px; }
-.cta p { position: relative; color: #b8c0d8; margin-bottom: 30px; font-size: 17px; }
+.cta p { position: relative; color: #d3c0b7; margin-bottom: 30px; font-size: 17px; }
 .cta .btn { position: relative; }
 
 /* ====================================
    Footer
 ==================================== */
-.site-footer { background: var(--surface-dark); color: #a7b0c8; padding: 66px 0 30px; }
+.site-footer { background: var(--surface-dark); color: #cbb6ad; padding: 66px 0 30px; }
 .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 40px; }
 .footer-brand .brand { color: #fff; margin-bottom: 14px; }
 .footer-brand p { font-size: 14.5px; max-width: 320px; line-height: 1.65; }
@@ -689,7 +706,7 @@ kbd {
 .footer-bottom {
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
   margin-top: 48px; padding-top: 26px; border-top: 1px solid rgba(255,255,255,.09);
-  font-size: 13px; color: #7f88a3;
+  font-size: 13px; color: #a08d85;
 }
 
 /* ====================================
@@ -772,7 +789,9 @@ kbd {
 
 /* ---- large phone / small tablet -------------------------------- */
 @media (max-width: 720px) {
-  :root { --header-h: 62px; }
+  /* Room for the mark and no more: the lockup is square, so the bar is driven by it. */
+  :root { --header-h: 78px; }
+  .brand-logo { height: 62px; }
   .section { padding: 74px 0; }
   .section-head { margin-bottom: 42px; }
   .cards, .trust-grid { grid-template-columns: 1fr; }
@@ -850,7 +869,7 @@ kbd {
 @media (max-width: 420px) {
   .container { padding: 0 15px; }
   .header-inner { padding-left: max(15px, env(safe-area-inset-left)); padding-right: max(15px, env(safe-area-inset-right)); }
-  .brand-name { font-size: 16px; }
+  .brand-logo { height: 54px; }
   /* Keep the engine status visible - it is real information - just compact. */
   .pill { font-size: 11px; padding: 6px 9px; gap: 5px; max-width: 104px;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -902,3 +921,48 @@ kbd {
   [data-reveal] { opacity: 1; transform: none; }
   .site-header { transform: none; }
 }
+
+/* ---------- premium looks ---------- */
+.looks { margin: 18px 0 0; }
+.looks-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding-bottom: 9px; }
+.looks-title { font-size: 13px; font-weight: 650; color: var(--text-secondary); }
+.looks-note { font-size: 12px; color: var(--text-muted); }
+/* Horizontal scroll, because ten looks will not fit on a phone and wrapping them into four
+   rows pushes the action button off the screen. */
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; scrollbar-width: thin; }
+.chips::-webkit-scrollbar { height: 6px; }
+.chips::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.chip {
+  flex: none; display: flex; flex-direction: column; gap: 1px;
+  padding: 9px 13px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--surface); color: var(--text-primary);
+  font: inherit; font-size: 13px; text-align: left; cursor: pointer; white-space: nowrap;
+  transition: border-color .18s, background .18s, box-shadow .18s, transform .18s;
+}
+.chip:hover:not(:disabled) { background: var(--surface-hover); transform: translateY(-1px); }
+.chip[aria-checked="true"] {
+  border-color: var(--primary); background: rgba(182,82,70,.06);
+  box-shadow: 0 0 0 3px rgba(182,82,70,.09);
+}
+.chip:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.chip:disabled { opacity: .5; cursor: progress; }
+.chip-name { font-weight: 640; }
+.chip-tag { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.chip[aria-checked="true"] .chip-tag { color: var(--primary); }
+.done-looks { margin-top: 18px; }
+.looks.busy .chips { opacity: .6; pointer-events: none; }
+
+/* ---------- real-photo comparison (THE DIFFERENCE) ---------- */
+/* Narrower than .demo-wrap because the sample is a PORTRAIT: at 900px wide it would stand
+   taller than most screens and the divider would be impossible to drag without scrolling. */
+.sample-wrap { max-width: 520px; margin: 0 auto; }
+.sample-frame { aspect-ratio: 880 / 1100; }
+.sample-img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+/* Both halves must be laid out identically or the divider would reveal a shifted photo. */
+.sample-frame .demo-after { overflow: hidden; }
+/* The caption chips are not bound by the portrait's narrow column - let them use the row so
+   they sit on one line instead of leaving an orphan underneath. */
+.showcase .demo-tags { max-width: 780px; margin-left: auto; margin-right: auto; }

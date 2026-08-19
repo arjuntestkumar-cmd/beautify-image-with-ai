@@ -43,6 +43,14 @@ class Analysis:
     dynamic_range: float        # 0 low .. 1 full
     brightness: float = 0.5
     contrast: float = 0.0
+    # How blurred is the SHARPEST part of the frame - the 20th percentile across the sampled
+    # windows, where `blur_score` is the median. The difference is the whole point: a sharp
+    # subject against a defocused background has a MEDIAN that says "blurry" (most windows land
+    # on the background) and a FLOOR that says "sharp", because some window found real detail.
+    # The floor is high only when nothing anywhere in the photo is sharp, which is exactly a
+    # soft-focus or mis-focused frame - the one case where recovering the whole frame, and not
+    # just the face, is both wanted and physically possible.
+    blur_floor: float = 1.0
     highlight_clip: float = 0.0
     shadow_clip: float = 0.0
     is_grayscale: bool = False
@@ -78,19 +86,21 @@ def _face_cascade() -> "cv2.CascadeClassifier":
     return _FACE_CASCADE
 
 
-def _detect_faces(gray: np.ndarray) -> List[FaceBox]:
+def _detect_faces(rgb: np.ndarray) -> List[FaceBox]:
     cascade = _face_cascade()
     if cascade.empty():
         return []
-    # Detect on a downscaled copy for speed on large images, then map boxes back.
-    h, w = gray.shape[:2]
+    # Detect on a downscaled copy for speed on large images, then map boxes back. Downscaling
+    # from the colour image directly means a 40 MP grayscale copy is never allocated to find
+    # something a 1024 px copy finds just as well.
+    h, w = rgb.shape[:2]
     scale = 1.0
     max_side = 1024
     if max(h, w) > max_side:
         scale = max_side / float(max(h, w))
-        small = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    else:
-        small = gray
+        rgb = cv2.resize(rgb, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    small = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     faces = cascade.detectMultiScale(small, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
     return [FaceBox(int(x / scale), int(y / scale), int(fw / scale), int(fh / scale)) for (x, y, fw, fh) in faces]
 
@@ -100,6 +110,29 @@ def _blur_score(gray: np.ndarray) -> float:
     lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     sharpness = min(1.0, lap_var / 1000.0)
     return float(round(1.0 - sharpness, 4))
+
+
+def _sharpness_windows(rgb: np.ndarray, window: int = 256, grid: int = 4) -> List[np.ndarray]:
+    """A grid of full-resolution windows, for a statistic that must see real pixels.
+
+    Same geometry as chunked.windows - 4x4 windows of 256 px, origins pinned to the 8-pixel
+    grid - duplicated here rather than imported so `analysis` keeps no dependency on the
+    pipeline package. It is used ONLY for `blur_floor`, and it runs whether or not the caller
+    sampled, so a photo just under the chunking threshold and one just over it measure their
+    softness identically. Cost is 16 x 256x256 Laplacians, about a megapixel.
+    """
+    h, w = rgb.shape[:2]
+    # Shrink the window rather than collapsing to one. Returning the whole frame as a single
+    # window makes the 20th percentile of a one-element list equal to the median, so blur_floor
+    # would equal blur_score for every photo under about a megapixel - and the entire point of
+    # the statistic is the gap between them. Below 128 px there is nothing worth sampling.
+    if min(h, w) < 128:
+        return [rgb]
+    win = int(min(window, max(64, min(h, w) // grid)))
+    win_h, win_w = min(win, h), min(win, w)
+    ys = [int(v) & ~7 for v in np.linspace(0, max(0, h - win_h), grid)]
+    xs = [int(v) & ~7 for v in np.linspace(0, max(0, w - win_w), grid)]
+    return [np.ascontiguousarray(rgb[y:y + win_h, x:x + win_w]) for y in ys for x in xs]
 
 
 def _noise_score(gray: np.ndarray) -> float:
@@ -167,18 +200,44 @@ def classify_quality(blur: float, noise: float, jpeg: float, drange: float, long
     return MEDIUM
 
 
-def analyse(rgb: np.ndarray, has_alpha: bool = False) -> Analysis:
-    """Run the full analysis on an RGB uint8 image."""
-    height, width = rgb.shape[:2]
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+def analyse(rgb: np.ndarray, has_alpha: bool = False,
+            sampled: "Optional[tuple]" = None) -> Analysis:
+    """Run the full analysis on an RGB uint8 image.
 
-    blur = _blur_score(gray)
-    noise = _noise_score(gray)
-    jpeg = _jpeg_artifact_score(gray)
+    `sampled` is `(full-resolution windows, whole-frame proxy)` from chunked.analysis_sample,
+    passed on a photo large enough that measuring it whole is not worth it - a Laplacian in
+    float64 over 40 MP costs 320 MB to learn one number. The degradation scores are pooled
+    across the windows (they must see real pixels at real scale) and the intensity statistics
+    come from the proxy (downscaling preserves them). Geometry, faces and the grayscale test
+    always come from the real image.
+
+    With `sampled=None` the windows are `[rgb]` and the proxy is `rgb`, so the median of one
+    window is that window and every number is exactly what it was before.
+    """
+    height, width = rgb.shape[:2]
+    tiles, whole = ([rgb], rgb) if sampled is None else sampled
+    grays = [cv2.cvtColor(t, cv2.COLOR_RGB2GRAY) for t in tiles]
+    gray = cv2.cvtColor(whole, cv2.COLOR_RGB2GRAY)
+
+    # Median across windows, not mean: one window that happens to land on a blank wall should
+    # not decide that the whole photo is soft.
+    def pooled(fn) -> float:
+        return float(np.median([fn(g) for g in grays]))
+
+    blur = pooled(_blur_score)
+    # The sharpest fifth of the frame rather than the middle of it. See Analysis.blur_floor.
+    # When `sampled` was given, `grays` already IS the window grid, so it is reused; otherwise
+    # the grid is cut here so the number means the same thing on both paths.
+    floor_grays = grays if len(grays) > 1 else [
+        cv2.cvtColor(t, cv2.COLOR_RGB2GRAY) for t in _sharpness_windows(rgb)]
+    blur_floor = float(round(
+        float(np.percentile([_blur_score(g) for g in floor_grays], 20)), 4))
+    noise = pooled(_noise_score)
+    jpeg = pooled(_jpeg_artifact_score)
+    edges = pooled(_edge_density)
     low_light = _low_light_score(gray)
-    edges = _edge_density(gray)
     drange = _dynamic_range(gray)
-    faces = _detect_faces(gray)
+    faces = _detect_faces(rgb)
     screenshot = _screenshot_like(gray, edges)
     category = classify_quality(blur, noise, jpeg, drange, max(width, height))
 
@@ -194,6 +253,7 @@ def analyse(rgb: np.ndarray, has_alpha: bool = False) -> Analysis:
         width=width,
         height=height,
         blur_score=blur,
+        blur_floor=blur_floor,
         noise_score=noise,
         jpeg_artifact_score=jpeg,
         low_light_score=low_light,

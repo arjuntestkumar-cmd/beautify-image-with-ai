@@ -1,4 +1,6 @@
-# Beautify
+# Khushify AI
+
+AI-powered image enhancement and beautification.
 
 One backend. One page. One thing: upload a photo, get a genuinely better version back.
 
@@ -68,25 +70,31 @@ Weights go in `models/` (`realesr-general-x4v3.pth`, `realesr-general-wdn-x4v3.p
 | --- | --- | --- |
 | `GET` | `/` | the web UI |
 | `GET` | `/health` | readiness, device, which models are loaded |
-| `POST` | `/api/enhance` | multipart `image=@photo.jpg`, optional `mode=beautify\|clear` → `202` + job id |
-| `GET` | `/api/jobs/{id}` | status, stage, progress, and the result metadata when done |
+| `GET` | `/api/filters` | the premium looks, and which one applies by default |
+| `POST` | `/api/enhance` | multipart `image=@photo.jpg`, optional `mode=beautify\|clear`, optional `filter=<id>` → `202` + job id |
+| `GET` | `/api/jobs/{id}` | status, stage, progress, queue position, and the result metadata when done |
 | `GET` | `/api/jobs/{id}/result` | the beautified image |
 | `GET` | `/api/jobs/{id}/original` | the original (the before/after slider uses it) |
-| `DELETE` | `/api/jobs/{id}` | delete both files now |
+| `POST` | `/api/jobs/{id}/filter` | `filter=<id>` → `202`; re-renders under a different look, or `none` |
+| `DELETE` | `/api/jobs/{id}` | delete the files now |
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"                 # beautify
+curl http://127.0.0.1:8000/api/filters
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"                 # beautify + default look
 curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "mode=clear" # clear only
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "filter=silk"
 curl http://127.0.0.1:8000/api/jobs/<id>
 curl -o out.jpg http://127.0.0.1:8000/api/jobs/<id>/result
+curl -X POST http://127.0.0.1:8000/api/jobs/<id>/filter -F "filter=none"   # take the look off
 ```
 
 Every response is wrapped: `{"success": true, "data": {...}}`, or
 `{"success": false, "error": {"code": "...", "message": "..."}}`. Interactive docs at `/docs`.
 
 Uploads are validated before a job is created (magic bytes, real decode, EXIF orientation,
-animation rejected, 20 MB / 40 MP ceilings), so a bad file fails instantly rather than a minute
-into processing.
+animation rejected, 64 MB / 80 MP ceilings), so a bad file fails instantly rather than a minute
+into processing. A photo over the pixel budget is fitted to it and processed rather than
+refused — being large is a reason to work differently, not a reason to hand the file back.
 
 ---
 
@@ -109,6 +117,51 @@ contrast than clear, while clear retains more raw skin texture.
 
 Pick **Clear only** when the photo should stay exactly itself, just cleaner - documents of
 people, evidence, product shots, anything where a flattering grade would be wrong.
+
+---
+
+## The premium looks
+
+The pipeline above fixes what is *wrong* with a photo — grain, blur, compression, a face the
+sensor never resolved. That is repair, and repair is not the same as flattery. The looks are the
+flattery: the grade, the skin, the light. They run last, as a separable stage.
+
+**One is applied by default** (Natural Radiance), because a photo that comes back looking merely
+*correct* is not what anyone uploading to a beautifier wanted. It is a starting point and never
+a commitment: the un-styled result is saved next to the finished one, so switching looks or
+removing the filter re-renders from there and never touches the models again. Clear mode's
+default is no look at all — its whole promise is that nothing was styled.
+
+| Look | What it leans on |
+| --- | --- |
+| **Natural Radiance** *(default)* | even skin that keeps its texture, warm light, clear eyes |
+| Soft Porcelain | softer skin, gentle light |
+| Golden Aura | lit-from-within glow, golden highlights |
+| Warm Amber | golden-hour warmth, richer colour |
+| Crystal Clear | bright, cool, crisp — the cleanest of the set |
+| Silk Premium | smooth skin over matte, editorial blacks |
+| Sculpted Detail | depth and definition; eyes and brows forward, skin left alone |
+| Even Tone | balances uneven skin tone and redness |
+| Rose Bloom | fuller lips, sharper facial detail, soft warm base |
+| Original | no look — the enhanced photo exactly as the pipeline produced it |
+
+Three rules keep them on the right side of natural:
+
+* **Identity is not negotiable.** Nothing moves a feature, narrows a face, or lightens skin
+  toward some other skin. Smoothing is frequency-separated — the low frequencies of the skin are
+  evened out and the micro-texture is added straight back on top — because the plastic look is
+  what happens when a filter takes the pores along with the blotches. Skin evening pulls chroma
+  a fraction of the way toward the photo's **own** median skin tone, so a blotchy cheek is
+  matched to the rest of that person's face rather than to a preset's idea of a face. Lips are
+  found by intersecting the mouth band with pixels redder than that same measured skin tone,
+  which is what keeps the effect off the chin and correct across complexions.
+* **Every term is bounded.** The strongest look here still keeps more than 40% of the original
+  skin, and the tone curve is the same bounded family the finish already uses.
+* **They cost what a filter should cost.** The frame-wide half is a single per-channel LUT, a
+  skin-protected vibrance and one local-contrast pass; the face half runs over the face region,
+  and the lip and eye passes over their own bands rather than the whole photo. All of it is
+  tile-safe on the same terms as everything else — a LUT is pointwise, so it is exactly
+  identical on a tile, and the one whole-frame measurement is taken once for the frame.
 
 ## What "Beautify" actually does
 
@@ -222,7 +275,15 @@ Every value has a working default, so there is no required `.env`. Copy `.env.ex
 | `AUTO_UPSCALE_MAX_SIDE` | `1600` | photos up to this size get 2×; bigger ones stay native |
 | `ENABLE_CUDA` | `true` | honoured only if torch reports a working CUDA device |
 | `RESULT_RETENTION_MINUTES` | `30` | how long an original + result survive before deletion |
-| `MAX_UPLOAD_BYTES` | `20971520` | 20 MB upload ceiling |
+| `MAX_UPLOAD_BYTES` | `67108864` | 64 MB upload ceiling |
+| `MAX_INPUT_PIXELS` | `80000000` | 80 MP; anything larger is fitted to it, not rejected |
+| `CHUNK_THRESHOLD_PIXELS` | `4000000` | past 4 MP the heavy stages run in tiles |
+| `CHUNK_TILE_SIZE` | `768` | tile edge for the classical stages |
+| `MODEL_CHUNK_TILE_SIZE` | `384` | tile edge (input side) for the super-resolution model |
+| `WORKER_CONCURRENCY` | `1` | heavy jobs running at once; the queue holds the rest |
+| `MAX_QUEUED_JOBS` | `64` | how deep the queue goes before new uploads are turned away |
+| `JOB_TIMEOUT_SECONDS_PER_MEGAPIXEL` | `90` | the deadline scales with the photo |
+| `KEEP_UNFILTERED_BASE` | `true` | keep an un-styled copy so looks can be swapped for free |
 | `OUTPUT_QUALITY` | `92` | JPEG/WebP encoder quality |
 | `MOCK_MODE` | `false` | `true` = plain resize, no AI. For wiring tests only |
 
@@ -238,10 +299,50 @@ cannot leave old photos behind. Nothing is uploaded anywhere — inference is lo
 
 ---
 
-## Performance
+## Large files, and more than one person at a time
 
-Inference is serialised (`WORKER_CONCURRENCY=1`): it saturates the CPU or GPU, so running two
-at once makes both slower.
+Two things used to make this service fall over, and neither of them was the model.
+
+**A big photo did not need more time, it needed less memory at once.** Every classical stage
+was a whole-array operation, and at 40 MP one `cvtColor` to float LAB is 480 MB with five more
+behind it. Worse, `RealESRGANer` always runs its 4× network before scaling back to the size you
+asked for, so a 24 MP photo briefly became a 384 MP tensor — about 4.6 GB — to come back the
+same size it went in. So the heavy stages now run over overlapping tiles and peak memory
+follows the tile, not the photo (`app/pipeline/chunked.py`).
+
+Two rules keep that invisible in the output:
+
+* **Halo.** Each tile is cut with a margin of context that is discarded after the op runs. When
+  the margin is wider than the filter's reach, every interior pixel sees exactly the
+  neighbourhood it would have seen in the whole-image call — the tiled result is not close to
+  the untiled one, it is *identical*.
+* **Global constants are measured once.** White-balance means, the edge-magnitude percentile,
+  the exposure gamma, the CLAHE curves: anything derived from the whole frame is measured up
+  front and handed to every tile. This is the part that would otherwise show — each tile
+  measuring its own would land a different correction on each side of a boundary.
+
+CLAHE was the hard one, since a per-tile histogram prints its grid across the photo as steps in
+brightness. It is already a grid algorithm, though, so `ClaheField` reads its 64 cell
+histograms one cell at a time and applies the resulting curves to any tile: the same algorithm,
+with its measurement separated from its application. Faces are handled the same way — the face
+stages run over the face region rather than the frame, and on a large photo GFPGAN restores
+each face from its own crop instead of upscaling the entire background to get at it.
+
+Photos under `CHUNK_THRESHOLD_PIXELS` skip all of this and take the original path unchanged.
+
+**Several people at once was a queue problem.** Inference is serialised
+(`WORKER_CONCURRENCY=1`): it saturates the CPU or GPU, so running two at once makes both
+slower and can exhaust memory. That single slot is the load control — ten simultaneous uploads
+mean nine ordered, lossless waits (the UI shows how many are ahead) rather than ten jobs
+racing each other into an out-of-memory kill. Jobs are submitted once, fail independently, and
+hand their memory back before the next one starts. The deadline scales with megapixels, so a
+large photo gets the minutes it needs and only a genuinely hung job is stopped.
+
+The priority, in order: **stability → successful processing → output quality → speed.**
+
+---
+
+## Performance
 
 On CPU (torch 2.2.2+cpu), roughly:
 
@@ -252,6 +353,21 @@ On CPU (torch 2.2.2+cpu), roughly:
 
 A CUDA build of torch is an order of magnitude faster; nothing else needs to change.
 
+Peak memory of the classical stages on a 24 MP (6000×4000) photo, measured, whole-array against
+tiled:
+
+| | Peak allocation | Wall clock |
+| --- | --- | --- |
+| Whole-array | 3387 MB | 334 s |
+| Tiled (`CHUNK_TILE_SIZE=768`) | **315 MB** | **143 s** |
+
+The tiled run is also the faster one, which is not a coincidence: the whole-array version spends
+most of its time moving half-gigabyte intermediates through a cache that cannot hold them.
+
+Changing the look on a finished photo re-renders from the saved un-styled copy — no decode of
+the original, no analysis, no models — so it costs a fraction of a full run rather than another
+one. It still goes through the same queue, so it can be waiting behind somebody else's photo.
+
 ---
 
 ## Layout
@@ -261,12 +377,14 @@ image-enhancer-py/
 ├── app/
 │   ├── main.py            FastAPI: API endpoints + serves the web UI
 │   ├── config.py          all settings, all with defaults
-│   ├── jobs.py            in-memory job store, single-slot worker, TTL sweeper
+│   ├── jobs.py            in-memory job store, single-slot queue, TTL sweeper
 │   ├── analysis.py        classical-CV image analysis (what makes one mode adaptive)
 │   ├── validation.py      magic bytes, safe decode, EXIF, pixel limits
 │   ├── errors.py          typed errors → HTTP status + stable code
 │   └── pipeline/
 │       ├── beautify.py    THE pipeline: plan + orchestration
+│       ├── chunked.py     tiled execution: what makes a very large photo finish
+│       ├── filters.py     the premium looks applied after the restoration
 │       ├── registry.py    lazy model loading, DNI denoise blending
 │       ├── ops.py         denoise, sharpen, hair, texture, finish, safeguards
 │       └── encode.py      encode + output validation
