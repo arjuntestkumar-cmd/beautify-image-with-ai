@@ -16,6 +16,7 @@ download — and fails outright on a host with no outbound access at runtime.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -96,10 +97,33 @@ def _stream(url: str, tmp: str, expected: int, name: str) -> None:
                     next_mark = done + PROGRESS_EVERY
 
 
+def _check_space(dest_dir: str, needed: int, name: str) -> None:
+    """Refuse to start a download the disk cannot hold, and say so plainly.
+
+    Running out of space mid-download raises OSError, which the retry loop below then treats as
+    a network blip: it deletes the part file, freeing exactly the space that let it get that far,
+    downloads to the same point, and fails again. That loop looks like a flaky connection and is
+    not one - so check first, and name the real problem.
+
+    Twice the file size, because the download and the finished file coexist briefly.
+    """
+    try:
+        free = shutil.disk_usage(dest_dir).free
+    except OSError:
+        return                      # cannot tell; let the download try
+    if free < needed * 2:
+        raise RuntimeError(
+            f"not enough disk for {name}: {_human(free)} free, about {_human(needed * 2)} "
+            f"needed. On a Docker host, old images are the usual culprit - "
+            f"`docker system df` shows what is held, `docker system prune -af` reclaims it."
+        )
+
+
 def download(url: str, dest: str, expected: int) -> None:
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
     name = os.path.basename(dest)
+    _check_space(os.path.dirname(dest), expected, name)
 
     # Retry, because one dropped connection 300 MB into a build should not fail the deploy.
     for attempt in range(1, ATTEMPTS + 1):
@@ -111,9 +135,14 @@ def download(url: str, dest: str, expected: int) -> None:
                 os.remove(tmp)          # no resume: a partial file must never look complete
             if attempt == ATTEMPTS:
                 raise
+            # The MESSAGE, not just the class. "OSError" alone hides the difference between a
+            # dropped connection and "No space left on device", which are the two things this
+            # actually fails on and want completely different fixes.
             wait = 3 * attempt
             print(f"  {name}: attempt {attempt} of {ATTEMPTS} failed "
-                  f"({exc.__class__.__name__}); retrying in {wait}s", flush=True)
+                  f"({exc.__class__.__name__}: {exc}); retrying in {wait}s", flush=True)
+            free = shutil.disk_usage(os.path.dirname(dest) or ".").free
+            print(f"  {name}: {_human(free)} free on the target filesystem", flush=True)
             time.sleep(wait)
 
     size = os.path.getsize(tmp)
