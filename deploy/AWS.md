@@ -192,9 +192,12 @@ Caddy obtains and renews the certificate automatically.
 
 ## Pulling new code onto a running instance
 
+The login user depends on the AMI: `ec2-user` on Amazon Linux, `ubuntu` on Ubuntu. Or use
+**EC2 → Connect → EC2 Instance Connect** for a browser terminal and skip the key entirely.
+
 ```bash
-ssh -i beautify.pem ubuntu@<PUBLIC-IP>
-cd ~/beautify
+ssh -i beautify.pem ec2-user@<PUBLIC-IP>    # ubuntu@ on an Ubuntu AMI
+cd ~/beautify                               # `ls ~` if you are not sure where it went
 
 curl -s localhost/health | grep -o '"build":"[^"]*"'   # note this, before
 
@@ -283,8 +286,20 @@ Two things about this file are worth knowing, because both have bitten people:
 * **`.env` is excluded from the image** (`.dockerignore`), which is deliberate — per-host tuning
   and anything secret should not be baked into a built artefact. It reaches the container through
   the `env_file:` entry in `docker-compose.yml`, and *only* through it. Before that entry existed,
-  a `.env` sitting next to the code on a server did nothing whatsoever. It needs Compose v2.24+;
-  check with `docker compose version`.
+  a `.env` sitting next to the code on a server did nothing whatsoever.
+
+  It needs **Compose v2.24+**, because it uses the long `path:` / `required:` form. Check first -
+  an older plugin fails to parse the file rather than ignoring the line, which turns a routine
+  deploy into an outage:
+
+  ```bash
+  docker compose version                      # v2.24.0 or newer
+
+  # too old? replace the plugin (Amazon Linux path shown; Ubuntu uses the same command)
+  sudo curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  ```
 * **Compose reads a file of the same name for its own `${VAR}` substitution** inside
   `docker-compose.yml`. Same filename, same directory, unrelated job. Do not be surprised that one
   file feeds two mechanisms.
