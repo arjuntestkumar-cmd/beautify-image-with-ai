@@ -5,6 +5,7 @@ overridden with environment variables or a .env file next to this project's root
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from functools import lru_cache
@@ -14,6 +15,33 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root = the folder that contains app/, models/, web/.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _build_id() -> str:
+    """A short fingerprint of the application code this process is actually running.
+
+    Computed once, at import, over the bytes of every module under `app/`. That timing is the
+    whole point: it describes the code that was loaded into THIS process, not the code sitting on
+    disk now. Editing the source of a running server changes the files and changes nothing else -
+    Python holds what it imported at startup - and that failure looks exactly like success from
+    the outside, right up until you wonder why a fix did not land.
+
+    Note it before a deploy and after: same value means the process was never replaced.
+    """
+    h = hashlib.sha256()
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    for dirpath, dirnames, filenames in os.walk(app_dir):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for name in sorted(f for f in filenames if f.endswith(".py")):
+            try:
+                with open(os.path.join(dirpath, name), "rb") as fh:
+                    h.update(fh.read())
+            except OSError:  # pragma: no cover - unreadable file should never fail startup
+                continue
+    return h.hexdigest()[:8]
+
+
+BUILD_ID = _build_id()
 
 
 def _p(*parts: str) -> str:

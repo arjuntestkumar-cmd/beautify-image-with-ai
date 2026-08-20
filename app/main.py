@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import ROOT, get_settings
+from .config import BUILD_ID, ROOT, get_settings
 from .errors import (AppError, CorruptedImage, FileTooLarge, ModelsUnavailable,
                      UnsupportedImageFormat)
 from .jobs import Job, JobStore
@@ -100,6 +100,9 @@ def health() -> dict:
     status = registry.public_status()
     return {
         "status": "ok" if (status["ready"] or status["mockMode"]) else "degraded",
+        # The code this process is running, not the code on disk. See config._build_id - this is
+        # how you tell a deploy that landed from one that only looked like it did.
+        "build": BUILD_ID,
         **status,
         "mode": "beautify",
     }

@@ -15,6 +15,22 @@ services:
     restart: unless-stopped
     ports:
       - "80:7860"
+    # The host's .env, delivered to the app.
+    #
+    # `.env` is gitignored AND in .dockerignore, on purpose: per-host tuning and anything secret
+    # do not belong baked into a built image. The consequence is that dropping a .env next to the
+    # code on a server does NOTHING on its own - the container never sees it. This line is what
+    # actually delivers it. `required: false` keeps a host that has no .env working exactly as
+    # before. Needs Compose v2.24+; `docker compose version` will tell you.
+    #
+    # Note this is a DIFFERENT mechanism from the .env Compose reads for its own `${VAR}`
+    # substitution inside this file. Same filename, same directory, unrelated jobs.
+    env_file:
+      - path: .env
+        required: false
+
+    # Anything here WINS over the .env above, which is the safe direction: a stray PORT in a
+    # hand-edited .env cannot detach the app from the port this file publishes.
     environment:
       PORT: "7860"
       # Uncomment to tune. Every value has a working default.

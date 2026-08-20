@@ -190,12 +190,126 @@ sudo systemctl restart caddy
 
 Caddy obtains and renews the certificate automatically.
 
+## Pulling new code onto a running instance
+
+```bash
+ssh -i beautify.pem ubuntu@<PUBLIC-IP>
+cd ~/beautify
+
+curl -s localhost/health | grep -o '"build":"[^"]*"'   # note this, before
+
+git pull
+docker compose up -d --build                           # REBUILD - see below
+docker compose logs -f                                 # ctrl-C once it says ready
+
+curl -s localhost/health | grep -o '"build":"[^"]*"'   # must have CHANGED
+```
+
+**`--build` is not optional.** The `Dockerfile` does `COPY . .`, so the application code is baked
+into the image when it is built. `git pull` updates the files on the host and changes nothing the
+container can see; `docker compose restart` restarts the *old* image. Both look like a successful
+deploy and neither is one. Only `up -d --build` rebuilds the image and replaces the container.
+
+That is the failure this project's `build` field exists to catch. It is a fingerprint of the
+Python that the running process actually loaded, so:
+
+| `build` after the deploy | Meaning |
+| --- | --- |
+| **different** from before | The new code is live. |
+| **same** as before | The container was never replaced. You skipped `--build`, or the build failed and Compose kept the old image running — read `docker compose logs`. |
+| field **missing** | You are on a build from before this field existed, so certainly not the latest. |
+
+A second, content-level check that needs no note-taking — the current build serves thirteen
+looks:
+
+```bash
+curl -s localhost/api/filters | grep -o '"id"' | wc -l    # 13
+curl -s localhost/api/filters | grep -o 'Studio Noir'
+```
+
+Nothing escapes the rebuild here. `web/` is served from disk on every request, but in Docker
+that disk is *inside the image*, so HTML, CSS and JS need the rebuild exactly like the Python
+does.
+
+> Running from source instead of Docker (`run.ps1`, or `uvicorn` directly) has the same trap in a
+> sharper form: `web/` really is live and a browser refresh picks it up, while `app/*.py` is held
+> in the running process and does not. You get a new-looking page driven by the old pipeline,
+> which is the single most confusing state this project can be in. **Restart the process after
+> touching anything under `app/`** - and `curl localhost:8000/health` will tell you whether you
+> did, via `build`.
+
+### Nothing came back up
+
+```bash
+docker compose ps                 # is it running, restarting, or gone?
+docker compose logs --tail=80     # the actual reason
+```
+
+A build killed for memory during `pip install torch` is the common one on a 2 GB box — add swap
+(see *If the build is killed* above) and rebuild. To go back to what was working:
+
+```bash
+git log --oneline -5
+git checkout <last-good-sha>
+docker compose up -d --build
+```
+
+The images and results in `.data/` are scratch and are wiped on restart anyway, so a rollback
+loses nothing but the jobs in flight.
+
+---
+
+## Changing configuration (`.env`)
+
+Every setting has a working default, so the app runs with no `.env` at all. Add one when you want
+to override something.
+
+```bash
+cd ~/beautify
+cp .env.example .env      # first time only - it is gitignored, so `git pull` never touches it
+nano .env
+
+docker compose up -d      # no --build needed: env is read at container start, not at build
+```
+
+Confirm it took:
+
+```bash
+docker compose exec beautify env | grep AUTO_UPSCALE_MAX_SIDE
+```
+
+Two things about this file are worth knowing, because both have bitten people:
+
+* **`.env` is excluded from the image** (`.dockerignore`), which is deliberate — per-host tuning
+  and anything secret should not be baked into a built artefact. It reaches the container through
+  the `env_file:` entry in `docker-compose.yml`, and *only* through it. Before that entry existed,
+  a `.env` sitting next to the code on a server did nothing whatsoever. It needs Compose v2.24+;
+  check with `docker compose version`.
+* **Compose reads a file of the same name for its own `${VAR}` substitution** inside
+  `docker-compose.yml`. Same filename, same directory, unrelated job. Do not be surprised that one
+  file feeds two mechanisms.
+
+Values set in the `environment:` block of `docker-compose.yml` **override** `.env`. That
+precedence is deliberate: a stray `PORT` in a hand-edited `.env` cannot detach the app from the
+port the compose file publishes.
+
+`git pull` will never overwrite your `.env` — it is gitignored. It *can* update `.env.example`, so
+after a pull that adds a setting, diff them:
+
+```bash
+diff <(grep -o '^[A-Z_]*' .env.example | sort -u) <(grep -o '^[A-Z_]*' .env | sort -u)
+```
+
+The settings most worth changing on a small instance are in **Tuning** below.
+
 ## Day-to-day
 
 ```bash
-cd ~/beautify && git pull && docker compose up -d --build   # deploy new code
-docker compose logs -f                                       # watch
-docker compose down                                          # stop
+docker compose logs -f       # watch
+docker compose ps            # status and health
+docker compose restart       # restart the SAME image (config already in env; no code change)
+docker compose down          # stop
+docker system prune -f       # reclaim disk from old images after a few deploys
 ```
 
 `restart: unless-stopped` brings the container back after a reboot.

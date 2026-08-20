@@ -126,9 +126,21 @@ crash, so there is nothing else to configure.
 To deploy new code:
 
 ```bash
+curl -s localhost/health | grep -o '"build":"[^"]*"'   # note it
 git pull
-docker compose up -d --build
+docker compose up -d --build                           # --build is NOT optional
+curl -s localhost/health | grep -o '"build":"[^"]*"'   # must have changed
 ```
+
+`--build` is required because the `Dockerfile` bakes the code into the image with `COPY . .`:
+`git pull` alone updates the host's files and nothing the container can see, and
+`docker compose restart` restarts the old image. The `build` field is a fingerprint of the code
+the running process actually loaded, so an unchanged value means the deploy did not land.
+
+To change settings, put a `.env` next to `docker-compose.yml` (`cp .env.example .env`) and run
+`docker compose up -d` - no rebuild needed. It reaches the container through the `env_file:`
+entry in the compose file, which needs Compose v2.24+. The full explanation, including the
+rollback steps, is in [AWS.md](AWS.md) - the mechanics are identical on any Docker host.
 
 ## Tuning
 
