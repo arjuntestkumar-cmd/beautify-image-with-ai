@@ -93,6 +93,18 @@ class Settings(BaseSettings):
     # An image past MAX_INPUT_PIXELS is fitted to that budget and processed, not rejected.
     # Only a file that cannot be decoded at all is turned away now.
     DOWNSCALE_OVERSIZE_INPUT: bool = True
+    # Uploads bigger than this are re-encoded before anything else touches them, and the smaller
+    # file is kept only if it really is smaller. This saves DISK, not time: the pipeline works on
+    # a pixel array, so two JPEGs of the same dimensions cost the same to process however many
+    # bytes they arrived as. The dial for processing cost is AUTO_UPSCALE_MAX_SIDE.
+    COMPRESS_ABOVE_BYTES: int = 3 * 1024 * 1024      # 3 MB
+    # Measured on a 6.3 MP portrait, re-encoded against the file as uploaded:
+    #     q95  2905 KB  40.2 dB     q90  2034 KB  36.8 dB     q85  1580 KB  34.6 dB
+    #     q80  1290 KB  33.3 dB     q75  1082 KB  32.5 dB
+    # Below roughly 36 dB, re-compression starts to show on skin - and skin is the whole product
+    # here, so anything the input loses the enhancement cannot get back. 90 keeps the result on
+    # the safe side of that line and still takes about 63% off a heavy upload.
+    COMPRESS_QUALITY: int = 90
 
     # Images whose longest side is at or below this get a genuine 2x upscale; larger images are
     # beautified at their native size (upscaling them is slow and rarely what the user wants).

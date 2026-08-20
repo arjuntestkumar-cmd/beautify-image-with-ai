@@ -13,8 +13,11 @@ services:
     image: beautify:latest
     container_name: beautify
     restart: unless-stopped
+    # Host port 80 by default, exactly as before. Set PUBLISH_ADDR=127.0.0.1:8080 in .env when
+    # you turn the `https` profile on below, so Caddy can take 80 and 443 and this stays on
+    # loopback where the open internet cannot reach it directly.
     ports:
-      - "80:7860"
+      - "${PUBLISH_ADDR:-80}:7860"
     # The host's .env, delivered to the app.
     #
     # `.env` is gitignored AND in .dockerignore, on purpose: per-host tuning and anything secret
@@ -53,3 +56,42 @@ services:
 
     # Uploads and results are scratch: they are deleted 30 minutes after each job
     # and wiped on every restart, so they deliberately stay inside the container.
+
+
+  # HTTPS, off unless you ask for it: `docker compose --profile https up -d`.
+  #
+  # It exists because a bare IP over plain http does not share. WhatsApp will not linkify
+  # `http://13.50.105.177/`, and Teams will not load a preview image over http - both are client
+  # policy that no meta tag can reach. A hostname with a certificate fixes both, and Caddy gets
+  # the certificate by itself.
+  #
+  # Set SITE_ADDRESS in .env first. With no domain to hand, use sslip.io: it resolves any dashed
+  # IP straight back to that IP, so `13-50-105-177.sslip.io` is a real public DNS name that
+  # Let's Encrypt will issue a certificate for. Verified resolving to 13.50.105.177.
+  caddy:
+    image: caddy:2-alpine
+    container_name: beautify-caddy
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # A plain default, NOT ${SITE_ADDRESS:?...}. Compose interpolates the whole file before it
+      # filters services by profile, so the error form would make `docker compose up -d` fail for
+      # everyone who has never touched HTTPS - a service that is switched off must not be able to
+      # break the one that is on. Set it in .env before enabling the profile; the Caddyfile says
+      # what to set it to.
+      SITE_ADDRESS: "${SITE_ADDRESS:-localhost}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing this volume means re-issuing on every restart, which
+      # Let's Encrypt rate-limits, so it is a named volume rather than scratch.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - beautify
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,42 @@
+# Caddy in front of Beautify: HTTPS, automatically.
+#
+# Why this exists at all: a site served from a bare IP over plain HTTP does not share properly.
+# WhatsApp will not turn `http://13.50.105.177/` into a tappable link, because it does not look
+# like a URL to its parser, and Teams refuses to load a preview image over http. Both are client
+# policy - no Open Graph tag can talk either of them round. A hostname and a certificate can.
+#
+# SITE_ADDRESS is read from the .env next to docker-compose.yml. Set it to whatever name points
+# at this machine:
+#
+#   SITE_ADDRESS=khushify.ai                    a domain you own
+#   SITE_ADDRESS=13-50-105-177.sslip.io         no domain needed - sslip.io resolves any
+#                                               dashed IP straight back to that IP, so it is a
+#                                               real public DNS name and Let's Encrypt will
+#                                               issue for it
+#
+# Caddy obtains and renews the certificate on its own, redirects http to https, and sets the
+# X-Forwarded-Proto and Host headers that the app reads to build its absolute share-card URLs -
+# so nothing else needs configuring once this is up.
+{$SITE_ADDRESS} {
+	reverse_proxy beautify:7860 {
+		# Uploads are up to 64 MB and a job can take minutes on CPU. Caddy's defaults are
+		# generous, but a slow phone upload behind a slow instance is exactly the case that
+		# trips a short one.
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	# The share card and the other static assets are immutable in practice - they change only
+	# when the image is rebuilt - so let the crawlers and browsers keep them.
+	@static path /static/*
+	header @static Cache-Control "public, max-age=86400"
+
+	encode zstd gzip
+
+	log {
+		output stderr
+		format console
+	}
+}

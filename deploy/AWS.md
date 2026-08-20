@@ -165,32 +165,81 @@ inference on two cores.
 
 ---
 
-## Custom domain with HTTPS
+## HTTPS — and why sharing needs it
 
-1. Point an `A` record at the instance's public IP. (Give the instance an **Elastic IP** first —
-   EC2 → Elastic IPs → Allocate → Associate — or the address changes on every stop/start.)
-2. Open port 443 in the security group if it is not already.
-3. On the instance:
+A site served from a bare IP over plain HTTP does not share properly, and neither symptom is
+fixable in markup:
+
+* **WhatsApp will not make `http://13.50.105.177/` tappable.** Its linkifier wants something
+  domain-shaped; a dotted quad is not.
+* **Teams shows no preview image.** It refuses to load card images over `http://`.
+
+Both are client policy. The Open Graph tags can be perfect - verified, the card returns
+`200 image/jpeg 50866 bytes` in 0.73 s to a WhatsApp user agent - and it changes neither. What
+fixes both is a hostname and a certificate.
+
+### No domain? You still have a hostname
+
+`sslip.io` resolves any dashed IP straight back to that IP, so **`13-50-105-177.sslip.io`** is a
+real public DNS name for this instance, needs no registration and no DNS records, and Let's
+Encrypt will issue a certificate for it. Confirmed resolving to `13.50.105.177`.
+
+Own a domain instead? Point an `A` record at the instance and use that name below. Give the
+instance an **Elastic IP** first (EC2 → Elastic IPs → Allocate → Associate), or the address
+changes on every stop/start.
+
+### 1. Open port 443
+
+EC2 → the instance → **Security → Security groups → Edit inbound rules** → add
+**HTTPS / TCP / 443 / 0.0.0.0/0**. Port 80 must stay open too: Let's Encrypt validates over it,
+and Caddy redirects it to https.
+
+### 2. Configure and start it
+
+Caddy runs as a second container - no host packages, so it works the same on Amazon Linux and
+Ubuntu. It is behind a Compose profile, so it stays off until asked for.
 
 ```bash
-sudo apt install -y caddy
+cd ~/beautify
+
+cat >> .env <<'ENV'
+SITE_ADDRESS=13-50-105-177.sslip.io
+PUBLISH_ADDR=127.0.0.1:8080
+ENV
+
+docker compose --profile https up -d
+docker compose logs -f caddy          # watch the certificate being issued
 ```
 
-`/etc/caddy/Caddyfile`:
+`PUBLISH_ADDR` moves the app off host port 80 and onto loopback so Caddy can take 80 and 443 -
+and, as a bonus, the app is then no longer reachable un-proxied from the internet. Leave it unset
+and the app keeps port 80 to itself exactly as before, with no Caddy.
 
-```
-your-domain.com {
-    reverse_proxy 127.0.0.1:80
-}
-```
+Wait for a line like `certificate obtained successfully`. First issuance takes a few seconds.
+
+### 3. Check
 
 ```bash
-sudo systemctl restart caddy
+curl -sI https://13-50-105-177.sslip.io/ | head -1              # HTTP/2 200
+curl -s https://13-50-105-177.sslip.io/ | grep -o 'og:image" content="[^"]*"'
 ```
 
-Caddy obtains and renews the certificate automatically.
+The `og:image` must now read **https**. Nothing needed changing to make that happen: the app
+builds its absolute URLs from the request, and Caddy sets the `Host` and `X-Forwarded-Proto`
+headers it reads. `PUBLIC_BASE_URL` stays empty.
 
-## Link previews (WhatsApp, Slack, iMessage, X)
+Then share `https://13-50-105-177.sslip.io/` - tappable in WhatsApp, with the card in Teams.
+
+> Already shared the IP version? Every platform has cached that. See the note on busting preview
+> caches below - and prefer the new https URL from here on, since it is a different URL and gets
+> its own cache entry anyway.
+
+### Certificates
+
+Caddy renews automatically. They live in the `caddy-data` volume, which is why it is a named
+volume: destroy it and every restart re-issues, and Let's Encrypt rate-limits that.
+
+## Link previews## Link previews (WhatsApp, Slack, iMessage, X)
 
 The share card is generated from the site's own logo and lives at
 `/static/assets/khushify-ai-card.jpg` - 1200x630, JPEG, 50 KB. Three properties of it are load
@@ -381,6 +430,8 @@ Elastic IP — an unattached Elastic IP is billed on its own.
 | `AUTO_UPSCALE_MAX_SIDE` | `1600` | Lower it to make big photos faster |
 | `RESULT_RETENTION_MINUTES` | `30` | How long a result survives — and how much disk is in use |
 | `MAX_UPLOAD_BYTES` | `67108864` | Upload ceiling (64 MB) |
+| `COMPRESS_ABOVE_BYTES` | `3145728` | Re-encode uploads over 3 MB before processing. Saves disk, not time; `0` disables |
+| `COMPRESS_QUALITY` | `90` | Quality for that re-encode. Below ~85 it starts to show on skin |
 | `CHUNK_THRESHOLD_PIXELS` | `4000000` | Past this, the heavy stages run in tiles |
 | `CHUNK_TILE_SIZE` | `768` | **Lower this first if the box is memory-starved.** Peak memory scales with it |
 | `MODEL_CHUNK_TILE_SIZE` | `384` | Same, for the super-resolution model. 256 is safe on 1 GB |

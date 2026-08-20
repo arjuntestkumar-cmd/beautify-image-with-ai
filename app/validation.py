@@ -9,6 +9,8 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .errors import CorruptedImage, InputPixelLimitExceeded, UnsupportedImageFormat
+# Shared so there is ONE JPEG writer: the encoder buffer that fixes has bitten this path too.
+from .pipeline.encode import save_jpeg
 from .logging_utils import get_logger
 
 log = get_logger("validation")
@@ -63,9 +65,23 @@ def decode_and_normalize(path: str, max_input_pixels: int,
 
     try:
         img = Image.open(path)
-        n_frames = getattr(img, "n_frames", 1)
-        if n_frames and n_frames > 1:
-            raise UnsupportedImageFormat("Animated images are not supported.")
+        # A multi-FRAME still is not an animation, and conflating the two rejected a large share
+        # of ordinary iPhone photographs.
+        #
+        # Apple's dual-camera and portrait modes write MPO files - several complete JPEG images
+        # in one container, used for depth and for the alternate exposure. Pillow reports
+        # `n_frames > 1` for those exactly as it does for a GIF, so testing that number on its own
+        # answered "Animated images are not supported" to a perfectly ordinary photo.
+        #
+        # Of the three formats accepted here, JPEG cannot animate at all: extra frames in a JPEG
+        # container are alternate stills, and the first is the photograph the user took. PNG
+        # (APNG) and WebP genuinely can, and are still refused - returning one frame of an
+        # animation silently would be worse than saying so.
+        n_frames = getattr(img, "n_frames", 1) or 1
+        if n_frames > 1:
+            if fmt in ("png", "webp"):
+                raise UnsupportedImageFormat("Animated images are not supported.")
+            img.seek(0)          # MPO and friends: frame 0 is the photograph
 
         source_size = img.size
         if downscale_oversize and (img.size[0] * img.size[1]) > max_input_pixels > 0:
@@ -109,66 +125,63 @@ def decode_and_normalize(path: str, max_input_pixels: int,
     )
 
 
-def compress_heavy_image(path: str, output_path: str, size_threshold_bytes: int = 10_000_000) -> tuple[str, bool]:
-    """Compress heavy image files to reduce processing load.
+def compress_heavy_image(path: str, output_path: str,
+                         size_threshold_bytes: int = 3 * 1024 * 1024,
+                         quality: int = 85) -> tuple[str, bool]:
+    """Re-encode an upload larger than the threshold — and keep the result only if it got smaller.
 
-    If the file size exceeds the threshold, intelligently compress it:
-    - JPEG/WebP: reduce quality to 80% to maintain visual quality while reducing file size
-    - PNG: re-encode with optimization
-    - All: keep original dimensions but reduce file size
+    What this buys and what it does not: the pipeline decodes to a pixel array, so a 3 MB JPEG
+    and a 12 MB JPEG of the same dimensions cost exactly the same to process. Re-encoding saves
+    disk and the bytes held per queued job; it is not a speed control. The dial that changes
+    processing cost is the number of PIXELS — `AUTO_UPSCALE_MAX_SIDE` and `MAX_INPUT_PIXELS`.
 
-    Args:
-        path: Path to the uploaded image file
-        output_path: Path where compressed image should be saved
-        size_threshold_bytes: Files larger than this get compressed (default: 10 MB)
+    Keeping the file only when it shrank is not a nicety. A photographic PNG re-encoded with
+    `optimize=True` measured 13234 KB -> 13491 KB: lossless re-compression of data that is
+    already packed efficiently simply grows it, and the previous version returned that larger
+    file and reported success.
 
-    Returns:
-        Tuple of (final_path, was_compressed)
-        - final_path: Path to the compressed file if compression happened, else original path
-        - was_compressed: Boolean indicating if compression was performed
+    Returns (path_to_use, was_compressed). On any failure the original is returned untouched —
+    a compression step must never be able to cost someone their upload.
     """
-    file_size = os.path.getsize(path)
-
-    # Skip compression if file is small enough
-    if file_size <= size_threshold_bytes:
+    try:
+        file_size = os.path.getsize(path)
+    except OSError:
+        return path, False
+    if size_threshold_bytes <= 0 or file_size <= size_threshold_bytes:
         return path, False
 
     try:
         fmt = detect_format(path)
-        img = Image.open(path)
-
-        # Preserve EXIF orientation during compression
-        img = ImageOps.exif_transpose(img)
-
-        if fmt in ("jpeg", "webp"):
-            # For lossy formats, reduce quality to ~80% for lighter processing
-            # This balances file size reduction with visual quality
-            img.save(
-                output_path,
-                format=fmt.upper(),
-                quality=80,
-                optimize=True
-            )
-            compressed_size = os.path.getsize(output_path)
-            reduction = (1 - compressed_size / file_size) * 100
-            log.info(
-                "compressed %s: %s → %s KB (%.1f%% reduction)",
-                fmt.upper(), file_size // 1024, compressed_size // 1024, reduction
-            )
-            return output_path, True
-        elif fmt == "png":
-            # For PNG, optimize without losing any quality (lossless)
-            img.save(output_path, format="PNG", optimize=True)
-            compressed_size = os.path.getsize(output_path)
-            reduction = (1 - compressed_size / file_size) * 100
-            log.info(
-                "optimized PNG: %s → %s KB (%.1f%% reduction)",
-                file_size // 1024, compressed_size // 1024, reduction
-            )
-            return output_path, True
-
-    except Exception as exc:
-        log.warning("compression failed, proceeding with original: %s", exc)
+        with Image.open(path) as opened:
+            # Bake the EXIF rotation in here, because the tag does not survive the re-encode.
+            # `decode_and_normalize` transposes again later; that is a no-op once the tag is
+            # gone, which is what keeps this from rotating a photo twice. Verified: a portrait
+            # carrying Orientation=6 decodes to the same dimensions with and without this step.
+            img = ImageOps.exif_transpose(opened)
+            if fmt == "jpeg":
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")        # CMYK and P JPEGs exist
+                save_jpeg(img, output_path, quality)
+            elif fmt == "webp":
+                img.save(output_path, format="WEBP", quality=quality, method=4)
+            elif fmt == "png":
+                img.save(output_path, format="PNG", optimize=True)
+            else:
+                return path, False
+    except Exception as exc:  # noqa: BLE001 - never fail an upload over an optimisation
+        log.warning("compression skipped (%s); using the original", exc.__class__.__name__)
         return path, False
 
-    return path, False
+    try:
+        new_size = os.path.getsize(output_path)
+    except OSError:
+        return path, False
+
+    if new_size >= file_size:
+        log.info("re-encoding %s did not help (%s KB -> %s KB); keeping the original",
+                 fmt.upper(), file_size // 1024, new_size // 1024)
+        return path, False
+
+    log.info("compressed %s: %s KB -> %s KB (%.0f%% smaller)", fmt.upper(),
+             file_size // 1024, new_size // 1024, (1.0 - new_size / file_size) * 100.0)
+    return output_path, True

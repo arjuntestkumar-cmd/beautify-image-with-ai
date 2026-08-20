@@ -552,8 +552,18 @@
   // The server reports real stage boundaries; between them we creep a little so the bar never
   // looks stuck during the long inference step.
   function paintProgress(pct, label, hint) {
-    // Creep forward between polls, but never past 99 until the server actually says 100.
-    state.shown = pct >= 100 ? 100 : Math.min(99, Math.max(state.shown + 0.6, pct));
+    // Creep forward between polls, but never more than CREEP_LEAD points ahead of what the
+    // server actually reported, and never past 99 until it says 100.
+    //
+    // The lead used to be unbounded: +0.6 every 900 ms poll regardless of the truth, so the bar
+    // reached 99% after about two and a half minutes on ANY long job. A failure then always read
+    // as "it failed at 99%", whatever stage it really died in - which is worse than useless when
+    // the number is the only clue anyone has. Bounded, the percentage is evidence again.
+    const CREEP_LEAD = 6;
+    const ceiling = Math.min(99, pct + CREEP_LEAD);
+    state.shown = pct >= 100
+      ? 100
+      : Math.max(state.shown, Math.min(ceiling, Math.max(state.shown + 0.6, pct)));
     $('bar').style.width = `${state.shown}%`;
     $('bar-outer').setAttribute('aria-valuenow', Math.round(state.shown));
     $('progress-pct').textContent = `${Math.round(state.shown)}%`;

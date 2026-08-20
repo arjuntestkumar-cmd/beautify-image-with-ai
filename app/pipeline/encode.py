@@ -2,13 +2,34 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFile, UnidentifiedImageError
 
 from ..errors import OutputPixelLimitExceeded, ProcessingFailed
+from ..logging_utils import get_logger
+
+log = get_logger("encode")
+
+# Pillow hands libjpeg ONE fixed output buffer, `ImageFile.MAXBLOCK`, and its default is 64 KB.
+# Optimised and progressive JPEG both have to build a whole scan before they can flush, so a scan
+# that does not fit makes libjpeg raise "Suspension not allowed here", which Pillow surfaces as
+# OSError: broken data stream when writing image file.
+#
+# It depends on how COMPRESSIBLE the photograph is, not merely how big: measured, a smooth
+# 2000x2500 portrait encodes fine at the default while incompressible content of exactly the same
+# dimensions fails. That is why this presented as "anything over about 100 KB fails" and why it
+# was intermittent - and because encoding is the last step, every one of those jobs ran the entire
+# pipeline, reached 98%, and only then threw the error away.
+#
+# Three bytes per pixel is the uncompressed size, and so the only bound a JPEG scan is guaranteed
+# to fit inside. The cap stops a 40 MP frame asking for 120 MB on a 2 GB box; past it, baseline
+# encoding takes over, which streams and needs no buffer at all.
+_JPEG_BUFFER_CAP = 64 * 1024 * 1024
+_maxblock_lock = threading.Lock()
 
 FORMAT_MIME = {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 FORMAT_EXT = {"jpeg": "jpg", "png": "png", "webp": "webp"}
@@ -67,10 +88,7 @@ def encode(
             bg = Image.new("RGB", image.size, jpeg_background)
             bg.paste(image, mask=image.split()[-1])
             image = bg
-        image.save(
-            dest_path, format="JPEG", quality=int(quality), optimize=True, progressive=True,
-            subsampling=1,  # 4:2:2 — kinder to skin and text than 4:2:0
-        )
+        save_jpeg(image, dest_path, quality)
     elif fmt == "png":
         image.save(dest_path, format="PNG", optimize=True)
     else:  # webp
@@ -80,6 +98,32 @@ def encode(
         path=dest_path, width=width, height=height,
         bytes=os.path.getsize(dest_path), mime_type=FORMAT_MIME[fmt],
     )
+
+
+def save_jpeg(image: Image.Image, dest_path: str, quality: int) -> None:
+    """Progressive, optimised JPEG — degrading to baseline rather than failing.
+
+    See the note on `_JPEG_BUFFER_CAP`. Baseline is the safety net because it streams its output
+    instead of buffering a scan, so it cannot hit this limit at all: measured good on a 48 MP
+    frame of pure noise, the worst case there is. The file comes out a few percent larger and is
+    not progressive, which beats handing back an error by a very long way.
+    """
+    common = dict(format="JPEG", quality=int(quality), subsampling=1)  # 4:2:2 — kind to skin
+    want = min(3 * image.width * image.height + (1 << 16), _JPEG_BUFFER_CAP)
+    # The buffer size is a Pillow-wide global, so the swap is serialised. With one worker this is
+    # never contended; it is what keeps raising WORKER_CONCURRENCY from corrupting an encode.
+    with _maxblock_lock:
+        previous = ImageFile.MAXBLOCK
+        ImageFile.MAXBLOCK = max(previous, want)
+        try:
+            image.save(dest_path, optimize=True, progressive=True, **common)
+            return
+        except OSError as exc:
+            log.warning("progressive JPEG needed more than %s MB of buffer (%s) — "
+                        "falling back to baseline", want // (1024 * 1024), exc)
+        finally:
+            ImageFile.MAXBLOCK = previous
+    image.save(dest_path, **common)
 
 
 def verify_encoded(path: str, expected_mime: str) -> None:

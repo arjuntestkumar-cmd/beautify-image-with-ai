@@ -202,18 +202,20 @@ async def enhance(image: UploadFile = File(...), mode: str = Form(MODE_DEFAULT),
         except Exception as exc:  # noqa: BLE001
             raise UnsupportedImageFormat("That file could not be read as an image.") from exc
 
-        # Compress heavy images before processing (> 10 MB → lighter load for models)
+        # Re-encode a heavy upload before anything else touches it. Saves disk and the bytes
+        # held per queued job; see validation.compress_heavy_image for what it does NOT save.
         compressed_path = os.path.join(settings.DATA_DIRECTORY, f"compressed-{uuid.uuid4().hex}")
         final_upload_path, was_compressed = compress_heavy_image(
-            upload_path, compressed_path, size_threshold_bytes=10_000_000
+            upload_path, compressed_path,
+            size_threshold_bytes=settings.COMPRESS_ABOVE_BYTES,
+            quality=settings.COMPRESS_QUALITY,
         )
         if was_compressed:
             _safe_remove(upload_path)
             upload_path = final_upload_path
-            total = os.path.getsize(upload_path)  # update size after compression
-            log.info("image compressed: new size %s KB", total // 1024)
+            total = os.path.getsize(upload_path)  # the stored size, after compression
         else:
-            _safe_remove(compressed_path)  # clean up unused path
+            _safe_remove(compressed_path)  # rejected or never written
 
     except Exception:
         _safe_remove(upload_path)
