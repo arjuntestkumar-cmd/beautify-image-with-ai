@@ -288,11 +288,17 @@ Two things about this file are worth knowing, because both have bitten people:
   the `env_file:` entry in `docker-compose.yml`, and *only* through it. Before that entry existed,
   a `.env` sitting next to the code on a server did nothing whatsoever.
 
-  It needs **Compose v2.24+**, because it uses the long `path:` / `required:` form. Check first -
-  an older plugin fails to parse the file rather than ignoring the line, which turns a routine
-  deploy into an outage:
+  It needs **Compose v2.24+**, because it uses the long `path:` / `required:` form. An older
+  plugin fails to *parse* the file rather than ignoring the line - so the deploy stops before it
+  starts. That is a failed deploy, not an outage: Compose that cannot read the file cannot act on
+  it either, and the container already running is left alone.
+
+  The version number settles it, but parsing the actual file settles it better - run this from
+  the repo after pulling and it either prints the resolved config or names the line it hates:
 
   ```bash
+  docker compose config -q && echo "compose file OK"
+
   docker compose version                      # v2.24.0 or newer
 
   # too old? replace the plugin (Amazon Linux path shown; Ubuntu uses the same command)
