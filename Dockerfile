@@ -45,10 +45,27 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
 COPY --chown=app:app requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-COPY --chown=app:app . .
-
-# Bake the weights into the image (~528 MB) so restarts are instant.
+# The weights come BEFORE the application code, and the order is the whole point.
+#
+# `COPY . .` invalidates every layer after it, so with the download sitting below the code copy,
+# ANY change to any source file re-fetched all 528 MB. That was most of the fifteen to twenty-five
+# minutes a deploy took - every single time, for a one-line edit.
+#
+# Above it, the layer's cache key is this RUN plus the fetch script alone, so the weights are
+# downloaded once and every later deploy reuses them. The script imports nothing but the standard
+# library and resolves its destination relative to its own path, which is what lets it be copied
+# on its own like this.
+#
+# Moving it costs one more full download - this layer has no cache at its new position - and
+# saves it on every deploy after that.
+COPY --chown=app:app scripts/fetch_models.py scripts/fetch_models.py
 RUN python scripts/fetch_models.py
+
+# Now the code. A change here no longer touches the weights layer above.
+# COPY merges into the image rather than replacing directories, and `models/*.pth` and
+# `gfpgan/weights/*.pth` are in .dockerignore, so nothing here can overwrite what was just
+# downloaded.
+COPY --chown=app:app . .
 
 # 7860 suits Hugging Face; PORT is honoured everywhere else.
 ENV PORT=7860

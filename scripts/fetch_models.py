@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 from typing import List, Tuple
 
@@ -66,14 +68,17 @@ def _ok(path: str, expected: int) -> bool:
     return abs(actual - expected) <= expected * TOLERANCE
 
 
-def download(url: str, dest: str, expected: int) -> None:
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    tmp = dest + ".part"
-    name = os.path.basename(dest)
+# How often the progress line is printed. Small enough to prove the download is moving on a
+# slow link, large enough not to bury a build log.
+PROGRESS_EVERY = 32 * 1_048_576
+ATTEMPTS = 3
 
+
+def _stream(url: str, tmp: str, expected: int, name: str) -> None:
     with urllib.request.urlopen(url, timeout=60) as response:
         total = int(response.headers.get("Content-Length") or expected)
         done = 0
+        next_mark = 0
         with open(tmp, "wb") as fh:
             while True:
                 chunk = response.read(1 << 20)
@@ -81,11 +86,35 @@ def download(url: str, dest: str, expected: int) -> None:
                     break
                 fh.write(chunk)
                 done += len(chunk)
-                if sys.stdout.isatty():
+                if done >= next_mark:
+                    # A full line, unconditionally - NOT a \r bar behind `if isatty()`.
+                    # A Docker build's stdout is not a tty, so the old version printed nothing at
+                    # all for the whole 332 MB file, which made a perfectly healthy download on a
+                    # slow link look exactly like a hung one for twenty minutes.
                     pct = done * 100 // max(1, total)
-                    print(f"\r  {name:<32} {pct:3d}%  {_human(done)}", end="", flush=True)
-        if sys.stdout.isatty():
-            print()
+                    print(f"  {name:<32} {pct:3d}%  {_human(done)} / {_human(total)}", flush=True)
+                    next_mark = done + PROGRESS_EVERY
+
+
+def download(url: str, dest: str, expected: int) -> None:
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".part"
+    name = os.path.basename(dest)
+
+    # Retry, because one dropped connection 300 MB into a build should not fail the deploy.
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            _stream(url, tmp, expected, name)
+            break
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            if os.path.exists(tmp):
+                os.remove(tmp)          # no resume: a partial file must never look complete
+            if attempt == ATTEMPTS:
+                raise
+            wait = 3 * attempt
+            print(f"  {name}: attempt {attempt} of {ATTEMPTS} failed "
+                  f"({exc.__class__.__name__}); retrying in {wait}s", flush=True)
+            time.sleep(wait)
 
     size = os.path.getsize(tmp)
     if abs(size - expected) > expected * TOLERANCE:
