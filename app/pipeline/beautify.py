@@ -44,6 +44,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
@@ -83,16 +84,28 @@ BASE_DENOISE = 0.45         # deliberately moderate — more erases pores and lo
 BASE_DETAIL = 0.58
 MAX_UPSCALE = 2
 
-# The two things a user can ask for.
+# The three things a user can ask for.
+#   PORTRAIT - the default. Restore the WHOLE photograph and flatter it lightly. Everything
+#              Beautify restores, with the frame-wide soft-focus recovery pushed to the top of
+#              its bounded range so the clothing, the shoulders and the ends of the hair come
+#              back with the face instead of being left behind it, and with a quieter grade and
+#              half the skin work, because a portrait should still look like the person.
 #   BEAUTIFY - clean it up AND make it look good: skin evened out, tone and colour lifted.
 #   CLEAR    - clean it up and nothing else: same restoration and denoising, but no skin work
 #              and no grading, so the result stays faithful to the original photo.
+MODE_PORTRAIT = "portrait"
 MODE_BEAUTIFY = "beautify"
 MODE_CLEAR = "clear"
-MODES = (MODE_BEAUTIFY, MODE_CLEAR)
+MODES = (MODE_PORTRAIT, MODE_BEAUTIFY, MODE_CLEAR)
+MODE_DEFAULT = MODE_PORTRAIT
 SKIN_CLEAN_BASE = 0.62      # beautify only
 GLOW_BASE = 0.22            # beautify only
+# Spot and blemish removal. Deliberately NOT beautify-only: taking a mark off a cheek is repair,
+# not flattery, and a "clear only" result that still carries every spot - sharpened, because the
+# clarity pass finds them - is the defect this exists to fix. See ops.blemish_clean.
+BLEMISH_BASE = 0.80
 TONE_DEPTH_BEAUTIFY = 0.46  # beautify grade; clear mode uses 0.0
+TONE_DEPTH_PORTRAIT = 0.30  # portrait: present, but a long way short of a look
 # The post-restoration denoise runs on the already-upscaled image, where it is far more
 # destructive than the model's own denoising. Keep the model blend strong and this pass light.
 POST_DENOISE_SCALE = 0.45
@@ -127,6 +140,7 @@ class Params:
     face_clarity: float
     body_clarity: float
     chroma_clean: float
+    blemish: float
     skin_clean: float
     glow: float
     hair_refine: float
@@ -136,6 +150,10 @@ class Params:
     # region anywhere in it; see build_params.
     soft_radius: float = 0.0
     soft_gain: float = 0.0
+    # The absolute clamp, in LEVELS, on what the wide-radius recovery may add to one pixel.
+    # This is the bound that actually decides how much of a soft shirt comes back - not the
+    # gain - because the wide term is clamped rather than scaled. See ops.edge_aware_sharpen.
+    soft_limit: float = 6.0
     warnings: List[str] = field(default_factory=list)
 
 
@@ -209,10 +227,10 @@ def _select_strategy(analysis: Analysis) -> str:
     return GENERAL
 
 
-def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTIFY,
+def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_DEFAULT,
                  exposure_lift: float = 0.0, cheap_faces: bool = False) -> Params:
     """Combine the preset with the measured condition of THIS photo."""
-    mode = mode if mode in MODES else MODE_BEAUTIFY
+    mode = mode if mode in MODES else MODE_DEFAULT
     warnings: List[str] = []
 
     # Effective noise, which is not the same as measured noise.
@@ -349,17 +367,54 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
                        * (1.0 - 0.8 * analysis.jpeg_artifact_score), 0.0, 2.0)
     # In OUTPUT pixels: this stage runs after super-resolution, so the radius follows the scale.
     soft_radius = round((1.6 + 2.6 * softness) * effective_scale, 2) if soft_gain > 0.02 else 0.0
+    # How many LEVELS the wide-radius recovery may add. This, and not the gain, is the bound
+    # that decides how much of a soft shirt comes back: the wide term is CLAMPED rather than
+    # scaled, so once it saturates, more gain does nothing at all. Six levels - what it was -
+    # saturated long before a defocused frame ran out of recoverable structure, which is why
+    # "clothing and hair are still blurry" survived a soft_gain already sitting at its maximum.
+    #
+    # Measured against the sharp original of this project's sample portrait blurred at sigma
+    # 3.4, as the percentage of the true acutance recovered in each region:
+    #     wide clamp   clothing   outer hair   PSNR
+    #          6           92.0%      78.1%    29.26 dB   <- the old value
+    #          9           94.7%      81.5%    29.43 dB
+    #         13           95.9%      83.4%    29.52 dB
+    #         17           96.2%      83.9%    29.54 dB
+    # PSNR rising alongside acutance is the part that matters: the added detail is landing where
+    # the original had detail, so this is recovery rather than crunch. It flattens after 13, so
+    # that is the top of the range, and it is only reached on a frame that measures completely
+    # soft - a photo with anything sharp in it has softness 0 and is untouched by any of this.
+    #
+    # Only the WIDE clamp moves. The narrow one stays at 12: swept on its own it contributed
+    # nothing to the numbers above (6 levels of wide clamp reproduces the old result exactly
+    # whatever the narrow clamp is doing), and it is the term that rings.
+    soft_limit = round(6.0 + 7.0 * softness, 2)
     if soft_gain > 0.02:
         warnings.append("soft_focus_recovered")
+
+    # ---- blemishes ---------------------------------------------------------------------
+    # Runs in BOTH modes. `skin_clean` below is cosmetic - it evens a complexion out - and Clear
+    # mode is right to refuse it. A spot is not a complexion: it is a defect on the photograph
+    # in the same sense a dust mark is, and removing it is the same promise the rest of this
+    # pipeline makes. Scaled up a little with degradation, because a soft or blocky source turns
+    # small marks into larger smudges that need more of the correction to clear.
+    blemish = _clamp(BLEMISH_BASE + 0.30 * degradation, 0.0, 1.0)
+    if analysis.screenshot_like or analysis.small_faces:
+        # Nothing here is a face at a scale where a "blemish" is distinguishable from a feature.
+        blemish = 0.0
 
     # Skin cleanup is what "beautify" means beyond restoration - and it is the whole difference
     # between the two modes. Clear mode does no skin work at all.
     skin_clean = 0.0
     glow = 0.0
-    if mode == MODE_BEAUTIFY:
-        glow = _clamp(GLOW_BASE * (0.8 + 0.6 * (1.0 - degradation)))
+    if mode in (MODE_BEAUTIFY, MODE_PORTRAIT):
+        # Portrait keeps half of it. The point of the mode is restoration, not retouching, and
+        # skin that has been evened out is the first thing that makes a portrait stop looking
+        # like the person in it.
+        share = 1.0 if mode == MODE_BEAUTIFY else 0.5
+        glow = _clamp(GLOW_BASE * (0.8 + 0.6 * (1.0 - degradation)) * share)
         # More smoothing for a grainy source, less for a clean one that has real skin to keep.
-        skin_clean = _clamp(SKIN_CLEAN_BASE * (0.55 + 1.8 * noise), 0.0, 1.0)
+        skin_clean = _clamp(SKIN_CLEAN_BASE * (0.55 + 1.8 * noise) * share, 0.0, 1.0)
 
     # ---- hair --------------------------------------------------------------------------
     hair_on = settings.HAIR_REFINEMENT_ENABLED and not analysis.screenshot_like
@@ -377,9 +432,19 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
         detail_strength = _clamp(detail_strength * 0.85)  # do not amplify artifacts
 
     # Clear mode is a faithful clean-up: no tone curve, no vibrance, no white-balance shift.
-    tone_depth = TONE_DEPTH_BEAUTIFY if mode == MODE_BEAUTIFY else 0.0
+    tone_depth = {MODE_BEAUTIFY: TONE_DEPTH_BEAUTIFY,
+                  MODE_PORTRAIT: TONE_DEPTH_PORTRAIT}.get(mode, 0.0)
 
     # ---- strategy overrides ------------------------------------------------------------
+    # Portrait's whole promise is that the rest of the photograph comes back with the face, so
+    # it takes the top of the recovery's range rather than the middle, and asks for more of the
+    # detail pass outside the face. Both are still bounded by exactly the same clamps.
+    if mode == MODE_PORTRAIT:
+        body_clarity = _clamp(body_clarity * 1.15, 0.25, 1.0)
+        if soft_gain > 0.02:
+            soft_gain = _clamp(soft_gain * 1.15, 0.0, 2.0)
+            soft_limit = round(min(17.0, soft_limit * 1.25), 2)
+
     if strategy == HIGH_QUALITY:
         # An already-excellent photo: skip aggressive super-resolution and lean on the finish.
         # Faces are still restored — that is the whole product — but with the maximum amount of
@@ -388,9 +453,12 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
         skin_texture = max(skin_texture, 0.60)
         if mode == MODE_BEAUTIFY:
             tone_depth = TONE_DEPTH_HIGH_QUALITY
+        elif mode == MODE_PORTRAIT:
+            tone_depth = min(TONE_DEPTH_HIGH_QUALITY, TONE_DEPTH_PORTRAIT * 1.4)
     if strategy == DOCUMENT:
         face_restore = False
         hair_refine = 0.0
+        blemish = 0.0
 
     return Params(
         mode=mode,
@@ -405,6 +473,7 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
         face_clarity=round(face_clarity, 3),
         body_clarity=round(body_clarity, 3),
         chroma_clean=round(chroma_clean, 3),
+        blemish=round(blemish, 3),
         skin_clean=round(skin_clean, 3),
         glow=round(glow, 3),
         hair_refine=round(hair_refine, 3),
@@ -412,6 +481,7 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
         tone_depth=tone_depth,
         soft_radius=soft_radius,
         soft_gain=round(soft_gain, 3),
+        soft_limit=soft_limit,
         warnings=warnings,
     )
 
@@ -419,6 +489,127 @@ def build_params(analysis: Analysis, settings: Settings, mode: str = MODE_BEAUTI
 # --------------------------------------------------------------------------------------
 # model stages
 # --------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# putting a restored face back
+# --------------------------------------------------------------------------------------
+# GFPGAN aligns every face it finds to a 512x512 crop, restores that, and pastes it back through
+# the inverse of the alignment. The alignment carries a ROTATION, so anything square in that
+# 512x512 space returns as a rotated square in the photograph - which is exactly the shape users
+# reported drawn across the head of a soft portrait.
+#
+# The square is facexlib's paste mask. It is built from a face-parsing network run on the
+# restored crop, and on a degraded face that network is not reliable: measured on this project's
+# sample portrait blurred at sigma 3.4, it labelled 45% of the crop "lower lip" and 23% "skin",
+# for a mask covering 73% of the square. facexlib then zeroes a ten-pixel border and blurs, which
+# leaves the mask standing at 1.000 at the crop's own edge on three of its four sides. A weight
+# of 1.0 that stops dead along a straight line is a visible join wherever the two sides differ -
+# and on a soft photo they differ enormously, because inside is a face rebuilt from a learned
+# prior and outside is a blurry photograph that only went through an upscaler.
+#
+# So the paste happens here instead, under a mask this pipeline owns. It is RADIAL - a circle
+# inscribed in the aligned square - so the corners are never written, no straight edge exists
+# anywhere in it, and it reaches zero well before the crop border whatever the parsing network
+# believes. `_ALIGN_FULL` is the radius that receives the restoration at full strength and
+# `_ALIGN_EDGE` where the write has faded to nothing, both as a fraction of the crop half-width.
+#
+# Pasting a circle rather than a parsed face also gives back what the parse mask threw away: the
+# hair, jaw and neck inside that circle are restored too, instead of being left as the upscaler
+# produced them. On a soft photo that is most of what "the head still looks blurry" meant.
+_ALIGN_FULL, _ALIGN_EDGE = 0.55, 0.96
+
+
+@lru_cache(maxsize=4)
+def _align_window(size: int) -> np.ndarray:
+    """The paste weight over one aligned face crop: 1 in the middle, 0 before the edge.
+
+    A raised cosine, so its slope is zero at both ends and the join carries no ridge where a
+    linear ramp would leave one. Cached: it depends on nothing but the crop size.
+    """
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+    c = (size - 1) / 2.0
+    r = np.sqrt((xx - c) ** 2 + (yy - c) ** 2) / max(c, 1e-6)
+    t = np.clip((_ALIGN_EDGE - r) / max(1e-6, _ALIGN_EDGE - _ALIGN_FULL), 0.0, 1.0)
+    return (0.5 - 0.5 * np.cos(np.pi * t)).astype(np.float32)
+
+
+def _paste_aligned(background: np.ndarray, faces_bgr: List[np.ndarray],
+                   inverse_affines: List[np.ndarray], helper_scale: float, out_scale: float,
+                   origin: Tuple[float, float] = (0.0, 0.0)) -> int:
+    """Write each restored aligned face onto `background`, in place. Returns how many landed.
+
+    `inverse_affines` come from facexlib and map aligned-crop coordinates onto input coordinates
+    multiplied by ITS upscale factor, so they are rescaled here to whatever scale this pipeline
+    is actually working at. `origin` shifts the result when the image handed to GFPGAN was itself
+    a window onto a larger photo, and is given in OUTPUT pixels.
+
+    Only each face's destination rectangle is touched, so a 40 MP photo costs the same here as a
+    small one.
+    """
+    h, w = background.shape[:2]
+    k = float(out_scale) / float(max(1e-6, helper_scale))
+    placed = 0
+    for face_bgr, inv in zip(faces_bgr, inverse_affines):
+        if face_bgr is None:
+            continue
+        size = int(face_bgr.shape[0])
+        m = np.asarray(inv, np.float32).copy() * k
+        # facexlib's own half-pixel correction, taken at the scale we are pasting at rather than
+        # at the one it assumed.
+        if out_scale > 1:
+            m[:, 2] += 0.5 * float(out_scale)
+        m[0, 2] += float(origin[0])
+        m[1, 2] += float(origin[1])
+
+        # Where the crop lands, from its four corners - no need to warp into a whole frame.
+        corners = np.array([[0, 0], [size, 0], [size, size], [0, size]], np.float32)
+        dst = corners @ m[:, :2].T + m[:, 2]
+        x0 = max(0, int(np.floor(dst[:, 0].min())))
+        y0 = max(0, int(np.floor(dst[:, 1].min())))
+        x1 = min(w, int(np.ceil(dst[:, 0].max())) + 1)
+        y1 = min(h, int(np.ceil(dst[:, 1].max())) + 1)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        local = m.copy()
+        local[0, 2] -= x0
+        local[1, 2] -= y0
+
+        face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+        warped = cv2.warpAffine(face_rgb, local, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
+        mask = cv2.warpAffine(_align_window(size), local, (x1 - x0, y1 - y0),
+                              flags=cv2.INTER_LINEAR)
+        if float(mask.max()) <= 0.002:
+            continue
+        mm = np.clip(mask, 0.0, 1.0)[..., None]
+        target = background[y0:y1, x0:x1]
+        np.copyto(target, np.clip(target.astype(np.float32) * (1.0 - mm)
+                                  + warped.astype(np.float32) * mm, 0, 255)
+                  .round().astype(np.uint8))
+        placed += 1
+    return placed
+
+
+def _refine_aligned(restored_bgr: np.ndarray, source_bgr: np.ndarray,
+                    params: Params) -> np.ndarray:
+    """Put the source face's own micro-texture back onto the restored crop - the anti-waxy pass.
+
+    Done in ALIGNED space, where the two are registered to the pixel: both are the same 512x512
+    crop of the same face, one restored and one not. The previous version did this over the whole
+    frame against a resized copy of the input - the same idea, carried out on two images that
+    only approximately line up.
+    """
+    if params.skin_texture <= 0.02:
+        return restored_bgr
+    src = source_bgr
+    if src.shape[:2] != restored_bgr.shape[:2]:
+        src = cv2.resize(src, (restored_bgr.shape[1], restored_bgr.shape[0]),
+                         interpolation=cv2.INTER_LANCZOS4)
+    if params.source_noise > 0.12:
+        # Borrow texture from a CLEANED copy. Otherwise "the source's real texture" is the
+        # source's grain, and it lands straight back on the face we just restored.
+        src = cv2.bilateralFilter(src, d=7, sigmaColor=30, sigmaSpace=7)
+    return ops.reinject_texture(restored_bgr, src, amount=params.skin_texture)
+
+
 def _is_oom(exc: Exception) -> bool:
     if isinstance(exc, MemoryError):
         return True
@@ -426,75 +617,91 @@ def _is_oom(exc: Exception) -> bool:
     return "out of memory" in msg or ("cuda" in msg and "memory" in msg)
 
 
-def _restore_faces(
-    registry: ModelRegistry, params: Params, working_rgb: np.ndarray
-) -> Tuple[Optional[np.ndarray], int, List[FaceBox]]:
-    """GFPGAN restoration with its native face-parsing paste-back onto a Real-ESRGAN background.
+def _gfpgan_faces(registry: ModelRegistry, params: Params, bgr: np.ndarray,
+                  only_center: bool):
+    """Restore every face in `bgr` and return the aligned crops - WITHOUT pasting them.
 
-    One pass, no halos, no ghost faces. Returns the 2x restored RGB image, the number of faces
-    actually processed, and where those faces ended up IN THE RETURNED IMAGE - the model's own
-    detections, which are far more reliable than the Haar boxes from analysis, and which the
-    clarity and hair stages then target.
+    `paste_back=False` is the point: it skips facexlib's compositing (see the note above
+    `_ALIGN_FULL`) and, as a side effect, skips GFPGAN's internal background upscale too. This
+    pipeline restores the background itself through `_restore_whole`, where the model's native 2x
+    output is area-averaged down rather than collapsed by an eight-tap Lanczos - so dropping the
+    internal pass removes a duplicate, not a stage.
+
+    Returns (restored aligned crops, inverse affines, detected boxes in the coordinates of `bgr`,
+    facexlib's upscale factor).
+    """
+    gfp = registry.gfpgan
+    attempts = 0
+    while True:
+        try:
+            cropped, restored, _ = gfp.enhance(
+                bgr, has_aligned=False, only_center_face=only_center, paste_back=False,
+                weight=_clamp(params.face_strength),
+            )
+            break
+        except (RuntimeError, MemoryError) as exc:
+            if _is_oom(exc) and attempts < 2:
+                attempts += 1
+                if registry.torch is not None:
+                    try:
+                        registry.torch.cuda.empty_cache()
+                    except Exception:  # pragma: no cover
+                        pass
+                log.warning("GFPGAN out of memory - retry %s", attempts)
+                continue
+            if _is_oom(exc):
+                raise OutOfMemory("Ran out of memory while restoring faces.") from exc
+            raise ProcessingFailed(
+                f"Face restoration failed: {exc.__class__.__name__}") from exc
+
+    if not restored:
+        return [], [], [], 1.0
+
+    helper = gfp.face_helper
+    helper.get_inverse_affine(None)
+    affines = list(helper.inverse_affine_matrices)
+    refined = [_refine_aligned(r, c, params) for r, c in zip(restored, cropped)]
+
+    boxes: List[FaceBox] = []
+    for det in getattr(helper, "det_faces", []) or []:
+        x1, y1, x2, y2 = (float(v) for v in det[:4])
+        bw, bh = int(x2 - x1), int(y2 - y1)
+        if bw > 1 and bh > 1:
+            boxes.append(FaceBox(max(0, int(x1)), max(0, int(y1)), bw, bh))
+    return refined, affines, boxes, float(getattr(helper, "upscale_factor", 2) or 2)
+
+
+def _restore_faces(
+    registry: ModelRegistry, params: Params, working_rgb: np.ndarray,
+    background: np.ndarray, out_scale: float,
+) -> Tuple[int, List[FaceBox]]:
+    """Restore every face in the photo and blend it onto the already-restored background.
+
+    `background` is modified in place. Returns how many faces were restored and where they are
+    IN THE BACKGROUND - the face model's own detections, which are far more reliable than the
+    Haar boxes from analysis, and which the clarity, blemish and hair stages then target.
     """
     gfp = registry.gfpgan
     if gfp is None:
-        return None, 0, []
-
-    # The background upsampler is the same Real-ESRGAN model, so DNI applies here too.
-    if registry.has_dni:
-        registry.set_dni(params.denoise_strength)
+        return 0, []
 
     bgr = cv2.cvtColor(working_rgb, cv2.COLOR_RGB2BGR)
-    weight = _clamp(params.face_strength)
-    attempts = 0
-
     with registry.lock:
-        while True:
+        try:
+            faces, affines, boxes, helper_scale = _gfpgan_faces(
+                registry, params, bgr, params.only_center_face)
+        finally:
             try:
-                _cropped, restored_faces, restored_bgr = gfp.enhance(
-                    bgr, has_aligned=False, only_center_face=params.only_center_face,
-                    paste_back=True, weight=weight,
-                )
-                break
-            except (RuntimeError, MemoryError) as exc:
-                if _is_oom(exc) and attempts < 2:
-                    attempts += 1
-                    if registry.torch is not None:
-                        try:
-                            registry.torch.cuda.empty_cache()
-                        except Exception:  # pragma: no cover
-                            pass
-                    log.warning("GFPGAN out of memory — retry %s", attempts)
-                    continue
-                if _is_oom(exc):
-                    raise OutOfMemory("Ran out of memory while restoring faces.") from exc
-                raise ProcessingFailed(
-                    f"Face restoration failed: {exc.__class__.__name__}") from exc
+                gfp.face_helper.clean_all()
+            except Exception:  # pragma: no cover
+                pass
+    if not faces:
+        return 0, []
 
-    if restored_bgr is None:
-        return None, 0, []
-
-    result = cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB)
-
-    # Map the model's detections (input coordinates) onto the restored image.
-    boxes: List[FaceBox] = []
-    ratio = result.shape[1] / float(max(1, working_rgb.shape[1]))
-    for det in getattr(gfp.face_helper, "det_faces", []) or []:
-        x1, y1, x2, y2 = (float(v) * ratio for v in det[:4])
-        w, h = int(x2 - x1), int(y2 - y1)
-        if w > 1 and h > 1:
-            boxes.append(FaceBox(int(x1), int(y1), w, h))
-
-    # Anti-waxy: add the source's real skin micro-texture back where skin is detected.
-    if params.skin_texture > 0.02:
-        src_up = cv2.resize(working_rgb, (result.shape[1], result.shape[0]), interpolation=cv2.INTER_LANCZOS4)
-        if params.source_noise > 0.12:
-            # Borrow texture from a CLEANED copy. Otherwise "the source's real texture" is the
-            # source's grain, and it lands straight back on the face we just restored.
-            src_up = cv2.bilateralFilter(src_up, d=7, sigmaColor=30, sigmaSpace=7)
-        result = ops.reinject_texture(result, src_up, amount=params.skin_texture)
-
-    return result, len(restored_faces or []), boxes
+    placed = _paste_aligned(background, faces, affines, helper_scale, out_scale)
+    k = float(out_scale)
+    return placed, [FaceBox(int(b.x * k), int(b.y * k), int(b.w * k), int(b.h * k))
+                    for b in boxes]
 
 
 def _sr(registry: ModelRegistry, settings: Settings, bgr: np.ndarray, scale: int) -> np.ndarray:
@@ -555,10 +762,9 @@ def _restore_whole(
     # by a model with a face prior - comes back sharp.
     #
     # This costs nothing. The 4x tensor is built either way; the 2x tile is a few megabytes and
-    # is discarded immediately. And it removes an inconsistency rather than adding one: on the
-    # un-chunked face path GFPGAN already asks this same model for outscale=2 and beautify()
-    # area-downscales the result, so small photos have always had the good resampling and only
-    # large ones were being handed the 4:1 collapse.
+    # is discarded immediately. And every photo now comes through here - the face path no longer
+    # has GFPGAN upscale the background on its own - so there is one answer to "how was the
+    # background resampled" rather than one per size of photo.
     sr_scale = max(2, int(params.effective_scale))
 
     def tile_fn(piece: np.ndarray, _rect) -> np.ndarray:
@@ -621,155 +827,66 @@ def _detect_face_boxes(registry: ModelRegistry, rgb: np.ndarray, only_center: bo
     return boxes
 
 
-# The face-paste mask's geometry, in one place, because the crop pad and the mask built inside
-# that crop have to come from the same numbers. When they do not, the mask is clipped by its own
-# crop and the result is a razor-sharp restored face fading into blurry untouched pixels along a
-# straight line - the rectangle users see around the restored area.
-#
-#   `wide`  = the face box offset up and left by 0.12 and scaled 1.24 x 1.30
-#   ops.face_region_mask then draws an ellipse of half-axes 0.62 x 0.68 of THAT, feathered with a
-#   Gaussian of sigma = max(6, wide.w / 9) whose float32 kernel reaches four sigma.
-#
-# How far the finished ellipse reaches past the FACE BOX, as a fraction of the box:
-#   x  0.62*1.24 - (1.24/2 - 0.12)         = 0.2688, the same on both sides
-#   y  0.68*1.30 + (1.30/2 - 0.12) - 1     = 0.4140 below the box (0.3540 above; pad symmetrically
-#                                            with the larger of the two)
-_WIDE_OFF, _WIDE_SX, _WIDE_SY = 0.12, 1.24, 1.30
-_ELL_AX, _ELL_AY = 0.62, 0.68
-_PASTE_REACH_X = _ELL_AX * _WIDE_SX - (_WIDE_SX / 2.0 - _WIDE_OFF)
-_PASTE_REACH_Y = _ELL_AY * _WIDE_SY + (_WIDE_SY / 2.0 - _WIDE_OFF) - 1.0
-_PASTE_SIGMA_FRAC = _WIDE_SX / 9.0      # sigma = max(6, wide.w / 9), and wide.w = 1.24 * box.w
-
-
 def _restore_faces_cropped(
     registry: ModelRegistry, params: Params, background: np.ndarray, source: np.ndarray,
     boxes: List[FaceBox], out_scale: float, runner: "chunked.Runner",
 ) -> Tuple[int, List[FaceBox]]:
     """Restore each face from its own crop and blend it onto an already-restored background.
 
-    On a large photo `gfp.enhance(whole_image)` is unaffordable for a reason that has nothing to
-    do with faces: it upscales the entire background to 2x internally before pasting the faces
-    on. The faces themselves are cheap - GFPGAN aligns each one to 512x512 regardless of how big
-    the photo is - so the fix is to hand it only the faces.
+    On a large photo, handing GFPGAN the whole frame is unaffordable for a reason that has
+    nothing to do with faces: its detector and its helper both hold the entire image. The faces
+    themselves are cheap - each is aligned to 512x512 regardless of how big the photo is - so the
+    fix is to hand it only the neighbourhood of each face.
 
-    Each crop is restored on its own, put back through the same texture re-injection the
-    whole-image path uses, and blended in under a feathered face mask, so what crosses the
-    boundary is a soft ramp between two versions of the same skin. `background` is modified in
-    place. Returns how many faces were restored and where they ended up.
+    Everything after that is identical to the small-photo path: the same restoration, the same
+    aligned crops, and the same `_paste_aligned` writing them back under the same radial mask.
+    Only where the pixels came from differs. `background` is modified in place.
     """
     gfp = registry.gfpgan
     if gfp is None or not boxes:
         return 0, []
 
-    bh, bw = background.shape[:2]
     sh, sw = source.shape[:2]
     restored_count = 0
     placed: List[FaceBox] = []
 
     with registry.lock:
-        saved_bg = gfp.bg_upsampler
-        try:
-            # No background upsampler for a crop: the crop's background is discarded anyway, and
-            # running super-resolution over it would put back the cost this exists to avoid.
-            gfp.bg_upsampler = None
-            for box in boxes:
-                runner.check()
-                # Enough room that the feathered blend mask below has faded to nothing before it
-                # reaches the edge of the crop, so no part of the crop's own filler background
-                # can cross into the result.
-                # Derived from the paste mask's own geometry, not from a guessed fraction, and
-                # PER AXIS: sigma is driven by the box WIDTH while the ellipse is taller than it
-                # is wide, so one scalar cannot satisfy both. The old `0.60 * max(w, h) + 16`
-                # gave a 400x520 face a 1056x1176 crop while the mask reached [-21, 1229] - the
-                # mask was still at about 0.12 where the crop stopped, i.e. twelve percent of a
-                # razor-sharp GFPGAN crop pasted against untouched blurry pixels along a straight
-                # line, on every face size measured. This is the crop that makes that impossible.
-                #
-                # sigma is taken at SOURCE scale, where max(6/out_scale, ...) is bounded above by
-                # max(6, ...), so the pad stays conservative for any out_scale >= 1. The +2 covers
-                # the int()/round() slack in `local` and `wide` below.
-                sigma = max(6.0, _PASTE_SIGMA_FRAC * box.w)
-                pad_x = int(np.ceil(_PASTE_REACH_X * box.w + 4.0 * sigma)) + 2
-                pad_y = int(np.ceil(_PASTE_REACH_Y * box.h + 4.0 * sigma)) + 2
-                sx0, sy0 = max(0, box.x - pad_x), max(0, box.y - pad_y)
-                sx1, sy1 = min(sw, box.x + box.w + pad_x), min(sh, box.y + box.h + pad_y)
-                if sx1 - sx0 < 32 or sy1 - sy0 < 32:
-                    continue
+        for box in boxes:
+            runner.check()
+            # Room for GFPGAN's own alignment crop, which spans roughly 2.2x the detected box.
+            # Cut it any tighter and the alignment samples off the end of the crop, where
+            # facexlib fills with flat grey - and that grey is then restored and pasted.
+            pad = int(np.ceil(1.1 * max(box.w, box.h)))
+            sx0, sy0 = max(0, box.x - pad), max(0, box.y - pad)
+            sx1, sy1 = min(sw, box.x + box.w + pad), min(sh, box.y + box.h + pad)
+            if sx1 - sx0 < 32 or sy1 - sy0 < 32:
+                continue
 
-                crop = np.ascontiguousarray(source[sy0:sy1, sx0:sx1])
-                try:
-                    _c, faces, out_bgr = gfp.enhance(
-                        cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), has_aligned=False,
-                        only_center_face=False, paste_back=True,
-                        weight=_clamp(params.face_strength),
-                    )
-                except (RuntimeError, MemoryError) as exc:
-                    # One face failing is not the photo failing: skip it and keep the rest.
-                    if _is_oom(exc):
-                        log.warning("skipping one face: out of memory on its crop")
-                        continue
-                    raise ProcessingFailed(
-                        f"Face restoration failed: {exc.__class__.__name__}") from exc
-                if out_bgr is None or not faces:
-                    continue
-
-                fixed = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
-                # Where this crop lands on the background, at the background's scale.
-                tx0, ty0 = int(round(sx0 * out_scale)), int(round(sy0 * out_scale))
-                tx1 = min(bw, int(round(sx1 * out_scale)))
-                ty1 = min(bh, int(round(sy1 * out_scale)))
-                if tx1 - tx0 < 8 or ty1 - ty0 < 8:
-                    continue
-                if (fixed.shape[1], fixed.shape[0]) != (tx1 - tx0, ty1 - ty0):
-                    interp = (cv2.INTER_AREA if (tx1 - tx0) < fixed.shape[1]
-                              else cv2.INTER_LANCZOS4)
-                    fixed = cv2.resize(fixed, (tx1 - tx0, ty1 - ty0), interpolation=interp)
-
-                local = FaceBox(int(round((box.x - sx0) * out_scale)),
-                                int(round((box.y - sy0) * out_scale)),
-                                max(1, int(round(box.w * out_scale))),
-                                max(1, int(round(box.h * out_scale))))
-
-                if params.skin_texture > 0.02:
-                    src_up = cv2.resize(crop, (fixed.shape[1], fixed.shape[0]),
-                                        interpolation=cv2.INTER_LANCZOS4)
-                    if params.source_noise > 0.12:
-                        src_up = cv2.bilateralFilter(src_up, d=7, sigmaColor=30, sigmaSpace=7)
-                    fixed = ops.reinject_texture(fixed, src_up, amount=params.skin_texture)
-
-                # A little wider than the mask the later stages use, so the blend sits on the
-                # jaw and the hairline rather than across the middle of a cheek.
-                wide = FaceBox(int(local.x - local.w * _WIDE_OFF),
-                               int(local.y - local.h * _WIDE_OFF),
-                               int(local.w * _WIDE_SX), int(local.h * _WIDE_SY))
-                mask = np.clip(ops.face_region_mask(fixed.shape, [wide]), 0.0, 1.0)
-                # Second guarantee, independent of the pad above. Fade the write to nothing at any
-                # crop edge INTERIOR to the frame; an edge that coincides with the image border
-                # needs nothing, because there is no untouched pixel on the far side of it. Width
-                # is 1.5 feather sigma, floored at 32 px and capped at a quarter of the crop - the
-                # pad is reach + 4 sigma, so this only ever touches pixels where the mask is below
-                # 0.6% of full strength.
-                #
-                # The rect is given in SOURCE coordinates on purpose: that is where the crop was
-                # actually clipped against the frame. Mixing scales is harmless because rect and
-                # full_shape drive only the four "is this edge the border" comparisons.
-                n = int(min(max(32.0, 1.5 * max(6.0, wide.w / 9.0)),
-                            (ty1 - ty0) // 4, (tx1 - tx0) // 4))
-                m = (mask * chunked.border_taper(fixed.shape, (sy0, sx0, sy1, sx1),
-                                                 (sh, sw), n))[..., None]
-                target = background[ty0:ty1, tx0:tx1]
-                np.copyto(target, np.clip(target.astype(np.float32) * (1.0 - m)
-                                          + fixed.astype(np.float32) * m,
-                                          0, 255).round().astype(np.uint8))
-
-                restored_count += 1
-                placed.append(FaceBox(tx0 + local.x, ty0 + local.y, local.w, local.h))
-        finally:
-            gfp.bg_upsampler = saved_bg
+            crop = np.ascontiguousarray(source[sy0:sy1, sx0:sx1])
             try:
-                gfp.face_helper.clean_all()
-            except Exception:  # pragma: no cover
-                pass
+                faces, affines, dets, helper_scale = _gfpgan_faces(
+                    registry, params, cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), False)
+            except OutOfMemory:
+                # One face failing is not the photo failing: skip it and keep the rest.
+                log.warning("skipping one face: out of memory on its crop")
+                continue
+            finally:
+                try:
+                    gfp.face_helper.clean_all()
+                except Exception:  # pragma: no cover
+                    pass
+            if not faces:
+                continue
+
+            n = _paste_aligned(background, faces, affines, helper_scale, out_scale,
+                               origin=(sx0 * out_scale, sy0 * out_scale))
+            if not n:
+                continue
+            restored_count += n
+            k = float(out_scale)
+            for d in (dets or [FaceBox(box.x - sx0, box.y - sy0, box.w, box.h)]):
+                placed.append(FaceBox(int((sx0 + d.x) * k), int((sy0 + d.y) * k),
+                                      int(d.w * k), int(d.h * k)))
     return restored_count, placed
 
 
@@ -837,11 +954,11 @@ def beautify(
     decoded: DecodedImage,
     out_path_template: str,
     progress: Optional[ProgressFn] = None,
-    mode: str = MODE_BEAUTIFY,
+    mode: str = MODE_DEFAULT,
     look_id: Optional[str] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> Tuple[str, BeautifyResult]:
-    """Enhance one decoded image in `beautify` or `clear` mode, then apply a look.
+    """Enhance one decoded image in `portrait`, `beautify` or `clear` mode, then apply a look.
 
     Returns (output path, result metadata).
 
@@ -927,10 +1044,10 @@ def beautify(
     warnings.extend(params.warnings)
     log.info(
         "plan: mode=%s look=%s strategy=%s scale=%sx faces=%s face_restore=%s quality=%s "
-        "noise=%.2f skin_tex=%.2f skin_clean=%.2f chunked=%s",
+        "noise=%.2f skin_tex=%.2f skin_clean=%.2f blemish=%.2f chunked=%s",
         params.mode, look.id, params.strategy, params.effective_scale, analysis.face_count,
         params.face_restore, analysis.quality_category, analysis.noise_score,
-        params.skin_texture, params.skin_clean, runner.chunked,
+        params.skin_texture, params.skin_clean, params.blemish, runner.chunked,
     )
 
     if is_mock:
@@ -955,62 +1072,43 @@ def beautify(
                     halo=32)
             models.append("deblock")
 
-        target_w = int(round(working.shape[1] * params.effective_scale))
-        target_h = int(round(working.shape[0] * params.effective_scale))
-        restored = None
+        # The WHOLE photograph is restored first, and the restored faces are laid on top of
+        # it. That order is the answer to "it only cleared the head": there is now exactly one
+        # path, and every pixel of the frame - clothing, hands, background, all of the hair -
+        # goes through the restoration model before a face is placed anywhere. What the face
+        # model adds is a second, better pass over the region it understands.
+        #
+        # It also removes a duplicate. GFPGAN used to upscale the entire background itself, as
+        # part of its paste, and then this pipeline resized that result again; `_restore_whole`
+        # does the same work once, with the area-averaged downscale that keeps a large photo's
+        # clothing from coming back aliased.
+        runner.stage("enhancing", 26, 62, "Enhancing detail")
+        with timer.stage("realesrgan"):
+            restored = _restore_whole(registry, settings, working, params, runner)
+        models.append("realesrgan:general")
 
-        if runner.chunked:
-            # Large photo: the background is restored tile by tile and the faces are restored
-            # from their own crops, which is the same two jobs GFPGAN does internally in one
-            # call - just without ever holding the whole 2x background it would build to do it.
-            runner.stage("enhancing", 26, 66, "Enhancing detail")
-            with timer.stage("realesrgan"):
-                restored = _restore_whole(registry, settings, working, params, runner)
-            models.append("realesrgan:general")
-
-            if params.face_restore and registry.gfpgan is not None:
-                runner.stage("restoring_faces", 66, 76, "Restoring faces")
-                with timer.stage("gfpgan"):
+        detected: List[FaceBox] = []
+        if params.face_restore and registry.gfpgan is not None:
+            runner.stage("restoring_faces", 62, 76, "Restoring faces")
+            with timer.stage("gfpgan"):
+                if runner.chunked:
+                    # Too large to hand the detector whole; find the faces on a bounded copy and
+                    # restore each from its own neighbourhood.
                     detected = _detect_face_boxes(registry, working, params.only_center_face)
                     if detected:
                         processed_faces, face_boxes = _restore_faces_cropped(
                             registry, params, restored, working, detected,
                             params.effective_scale, runner)
-                if processed_faces:
-                    models.append("gfpgan")
-                elif detected:
-                    # Restoration produced nothing, but RetinaFace still knows where the faces
-                    # are, and that is better information than Haar for the stages that follow.
-                    k = params.effective_scale
-                    face_boxes = [FaceBox(b.x * k, b.y * k, b.w * k, b.h * k) for b in detected]
-        else:
-            # Face path: GFPGAN restores faces AND upscales the background in one pass.
-            if params.face_restore and registry.gfpgan is not None:
-                report("restoring_faces", 45, "Restoring faces")
-                with timer.stage("gfpgan"):
-                    restored2x, processed_faces, model_faces = _restore_faces(
-                        registry, params, working)
-                if restored2x is not None:
-                    models += ["realesrgan:general", "gfpgan"]
-                    report("blending", 70, "Blending faces")
-                    # GFPGAN always outputs 2x - resize to the scale we actually want.
-                    if (restored2x.shape[1], restored2x.shape[0]) != (target_w, target_h):
-                        interp = (cv2.INTER_AREA if target_w < restored2x.shape[1]
-                                  else cv2.INTER_LANCZOS4)
-                        k = target_w / float(max(1, restored2x.shape[1]))
-                        restored = cv2.resize(restored2x, (target_w, target_h), interpolation=interp)
-                        model_faces = [FaceBox(int(b.x * k), int(b.y * k), int(b.w * k), int(b.h * k))
-                                       for b in model_faces]
-                    else:
-                        restored = restored2x
-                    face_boxes = model_faces or face_boxes
-
-            # Everything else (and the fallback when GFPGAN produced nothing).
-            if restored is None:
-                report("enhancing", 50, "Enhancing detail")
-                with timer.stage("realesrgan"):
-                    restored = _restore_whole(registry, settings, working, params, runner)
-                models.append("realesrgan:general")
+                else:
+                    processed_faces, face_boxes = _restore_faces(
+                        registry, params, working, restored, params.effective_scale)
+            if processed_faces:
+                models.append("gfpgan")
+            elif detected:
+                # Restoration produced nothing, but RetinaFace still knows where the faces are,
+                # and that is better information than Haar for the stages that follow.
+                k = params.effective_scale
+                face_boxes = [FaceBox(b.x * k, b.y * k, b.w * k, b.h * k) for b in detected]
 
         # Denoise a result that is still grainy. The old threshold of 0.4 was far above what
         # heavy visible grain actually measures (~0.25), so the noisiest photos - the ones that
@@ -1057,8 +1155,23 @@ def beautify(
     face_mask = (ops.face_region_mask(restored.shape, face_boxes)
                  if face_boxes and not runner.chunked else None)
 
+    # ---- blemishes: spots, marks and small blotches, in BOTH modes ----------------------
+    # Ordered before every sharpening stage on purpose. A blemish is a small, low-contrast,
+    # skin-coloured blob, which is the single most rewarding thing a local sharpener can find:
+    # run face_clarity first and each mark comes out deeper and harder-edged than it went in,
+    # which is precisely the complaint - a "cleared" photo whose face reads as dirtier than the
+    # original. Take them out first and there is nothing there to deepen.
+    if not is_mock and params.blemish > 0 and face_boxes:
+        runner.stage("blemish", 82, 83, "Clearing blemishes")
+        with timer.stage("blemish"):
+            restored = runner.region(
+                restored, face_boxes,
+                lambda piece, bx, mask: ops.blemish_clean(piece, bx, params.blemish, mask=mask),
+                pad_frac=0.75, mask_fn=ops.blemish_region_mask)
+        models.append("blemish-clean")
+
     if not is_mock and params.face_clarity > 0 and face_boxes:
-        runner.stage("face_clarity", 82, 84, "Refining faces")
+        runner.stage("face_clarity", 83, 85, "Refining faces")
         with timer.stage("face_clarity"):
             hi = chunked.sample_edge_hi(restored) if runner.chunked else None
             restored = runner.region(
@@ -1070,7 +1183,7 @@ def beautify(
 
     # ---- clarity for everything else: hands, clothing, objects, background --------------
     if not is_mock and params.body_clarity > 0:
-        runner.stage("body_clarity", 84, 87, "Refining detail")
+        runner.stage("body_clarity", 85, 87, "Refining detail")
         with timer.stage("body_clarity"):
             hi = chunked.sample_edge_hi(restored) if runner.chunked else None
             source = restored
@@ -1087,7 +1200,8 @@ def beautify(
                     lambda piece, rect: ops.body_clarity(
                         piece, face_field.crop(rect) if face_field else face_mask,
                         params.body_clarity, edge_hi=hi,
-                        soft_radius=params.soft_radius, soft_gain=gain),
+                        soft_radius=params.soft_radius, soft_gain=gain,
+                        wide_limit=params.soft_limit),
                     halo=body_halo)
 
             lifted = _body(params.soft_gain)
@@ -1138,22 +1252,26 @@ def beautify(
         models.append("glow")
 
     # ---- the photographic finish (this is the "beautify") -------------------------------
-    runner.stage("finishing", 90, 93, "Finishing")
-    with timer.stage("finish"):
-        # White balance and the closing CLAHE are the two whole-frame measurements in here;
-        # both are taken once and handed to every tile. See ops.premium_finish.
-        wb = chunked.channel_means(restored) if runner.chunked else None
-        clahe = (chunked.ClaheField(restored, 1.0 + 0.6 * params.tone_depth,
-                                    pre_curve=ops.tone_curve_lut(params.tone_depth))
-                 if runner.chunked else None)
-        restored = runner.map(
-            restored,
-            lambda piece, rect: ops.premium_finish(
-                piece, tone_depth=params.tone_depth, is_grayscale=analysis.is_grayscale,
-                wb_means=wb,
-                local_contrast=(lambda l: clahe.apply(l, rect)) if clahe else None),
-            halo=8)
-    models.append("photo-finish")
+    # Skipped entirely in Clear mode. `premium_finish` returns its input unchanged at tone_depth
+    # 0, so this guard changes no pixel - it saves a full-frame pass, and on the chunked path it
+    # saves building a ClaheField whose output would have been discarded.
+    if params.tone_depth > 0.02:
+        runner.stage("finishing", 90, 93, "Finishing")
+        with timer.stage("finish"):
+            # White balance and the closing CLAHE are the two whole-frame measurements in here;
+            # both are taken once and handed to every tile. See ops.premium_finish.
+            wb = chunked.channel_means(restored) if runner.chunked else None
+            clahe = (chunked.ClaheField(restored, 1.0 + 0.6 * params.tone_depth,
+                                        pre_curve=ops.tone_curve_lut(params.tone_depth))
+                     if runner.chunked else None)
+            restored = runner.map(
+                restored,
+                lambda piece, rect: ops.premium_finish(
+                    piece, tone_depth=params.tone_depth, is_grayscale=analysis.is_grayscale,
+                    wb_means=wb,
+                    local_contrast=(lambda l: clahe.apply(l, rect)) if clahe else None),
+                halo=8)
+        models.append("photo-finish")
 
     # ---- final edge-aware detail + one bounded fallback ---------------------------------
     reference = restored

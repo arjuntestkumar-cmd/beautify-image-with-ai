@@ -157,6 +157,9 @@
     setSplit(50);
   };
 
+  makeCompare(document.getElementById('hero-compare'),
+              document.getElementById('hero-compare-after'),
+              document.getElementById('hero-compare-handle'));
   makeCompare(document.getElementById('demo'),
               document.getElementById('demo-after'),
               document.getElementById('demo-handle'));

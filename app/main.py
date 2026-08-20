@@ -3,7 +3,7 @@
     GET  /                      the web UI
     GET  /health                liveness + which models are loaded
     GET  /api/filters           the premium looks, and which one is applied by default
-    POST /api/enhance           multipart upload -> 202 with a job id
+    POST /api/enhance           multipart upload -> 202 with a job id (mode=portrait|beautify|clear)
     GET  /api/jobs/{id}         status / progress
     GET  /api/jobs/{id}/result  the beautified image
     GET  /api/jobs/{id}/original  the original (used by the before/after slider)
@@ -31,7 +31,8 @@ from .errors import (AppError, CorruptedImage, FileTooLarge, ModelsUnavailable,
 from .jobs import Job, JobStore
 from .logging_utils import configure, get_logger
 from .pipeline import filters
-from .pipeline.beautify import MODES, beautify, restyle
+from .pipeline.beautify import MODES, MODE_DEFAULT, beautify, restyle
+from .pipeline.encode import FORMAT_MIME
 from .pipeline.registry import ModelRegistry
 from .validation import MIME_BY_FORMAT, decode_and_normalize, compress_heavy_image
 
@@ -150,13 +151,13 @@ def _restyle_work(job: Job, look_id: str) -> None:
 
 
 @app.get("/api/filters")
-def filter_catalogue(mode: str = "beautify") -> dict:
+def filter_catalogue(mode: str = MODE_DEFAULT) -> dict:
     """The looks on offer, and the one that applies when the caller does not choose."""
-    return {"success": True, "data": filters.catalogue(mode if mode in MODES else "beautify")}
+    return {"success": True, "data": filters.catalogue(mode if mode in MODES else MODE_DEFAULT)}
 
 
 @app.post("/api/enhance", status_code=202)
-async def enhance(image: UploadFile = File(...), mode: str = Form("beautify"),
+async def enhance(image: UploadFile = File(...), mode: str = Form(MODE_DEFAULT),
                   filter: str = Form(None)) -> JSONResponse:
     # Refuse up front rather than queueing work that cannot produce a real result.
     if not settings.MOCK_MODE and not registry.status.ready:
@@ -225,7 +226,7 @@ async def enhance(image: UploadFile = File(...), mode: str = Form("beautify"),
     os.replace(upload_path, original_path)
 
     job.original_path = original_path
-    job.mode = mode if mode in MODES else "beautify"
+    job.mode = mode if mode in MODES else MODE_DEFAULT
     job.look = filters.resolve(filter, job.mode).id
     job.original_name = os.path.basename(image.filename or "image")
     job.original_mime = MIME_BY_FORMAT.get(decoded.detected_format, "image/jpeg")
@@ -295,6 +296,30 @@ def job_result(job_id: str):
             "Cache-Control": "private, max-age=300",
         },
     )
+
+
+@app.get("/api/jobs/{job_id}/base")
+def job_base(job_id: str):
+    """The enhanced photo with NO look on it - the image every look is rendered from.
+
+    This is what makes the browser's filter previews honest. Without it the page can only
+    preview a look on top of whatever result is currently on screen, which already carries a
+    look: pick "Golden Aura" while "Warm Amber" is showing and the swatch is Amber-then-Aura, a
+    grade nobody will ever be sent. Previewing from the base is previewing the real thing.
+
+    It is the same file the server re-renders from (BeautifyResult.base_path), so a preview and
+    the result that replaces it a second later started from identical pixels.
+    """
+    job = store.get_for_file(job_id)
+    base = job.result.base_path if job.result else None
+    if job.status != "completed" or not base or not os.path.exists(base):
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": {"code": "NO_BASE",
+                                                 "message": "The un-styled version is not available."}},
+        )
+    return FileResponse(base, media_type=FORMAT_MIME.get(job.result.base_format, "image/jpeg"),
+                        headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/jobs/{job_id}/original")

@@ -182,16 +182,20 @@ def edge_aware_sharpen(
     region_mask: Optional[np.ndarray] = None,
     halo_limit: float = 16.0,
     skin_guard_mask: Optional[np.ndarray] = None,
+    skin_guard: float = 0.55,
     edge_hi: Optional[float] = None,
     soft_radius: float = 0.0,
     soft_gain: float = 0.0,
+    wide_limit: Optional[float] = None,
 ) -> np.ndarray:
     """Sharpen luminance where structure is confident. `strength` 0..1.
 
     `skin_guard_mask` scopes the skin protection. Unscoped, that protection applies to anything
     skin-coloured anywhere in the frame - including a hand, an arm or a neck, which are then
     held back by 55% and come out soft while the rest of the photo sharpens around them. Pass
-    the face region to protect the face and leave the rest of the body alone.
+    the face region to protect the face and leave the rest of the body alone. `skin_guard` is
+    how much of the sharpening skin gives up, so a caller that needs the eyes and the lash line
+    at full strength can still keep a cheek from being crunched (see `face_clarity`).
 
     `soft_radius` / `soft_gain` add a SECOND, wider scale, and they are what makes this pass
     able to do anything at all for a soft-focus photograph. The 1.1 px unsharp below measures
@@ -220,7 +224,7 @@ def edge_aware_sharpen(
         guard = _skin_mask(rgb)
         if skin_guard_mask is not None:
             guard = guard * np.clip(skin_guard_mask, 0.0, 1.0)
-        guard_mul = (1.0 - 0.55 * guard)
+        guard_mul = (1.0 - float(np.clip(skin_guard, 0.0, 1.0)) * guard)
         weight *= guard_mul
     region = None if region_mask is None else np.clip(region_mask, 0.0, 1.0)
     if region is not None:
@@ -233,9 +237,16 @@ def edge_aware_sharpen(
             wide_weight *= guard_mul
         if region is not None:
             wide_weight = wide_weight * region
-        wide_limit = halo_limit * 0.5
+        # The wide clamp is SEPARATE from the narrow one, and that separation is the whole
+        # safety argument for pushing soft-focus recovery hard. The narrow term is the one that
+        # rings: it acts at 1.1 px, where a genuinely sharp edge already has all its contrast,
+        # so raising its clamp buys detail on a soft photo and buys halos on every other kind.
+        # The wide term acts at the blur's own radius, where a sharp edge leaves almost nothing
+        # and a defocused one leaves everything - so it can be given a lot more room without the
+        # same risk. Default keeps the old behaviour for every caller that does not ask.
+        wl = halo_limit * 0.5 if wide_limit is None else float(wide_limit)
         wide_high = np.clip(l - cv2.GaussianBlur(l, (0, 0), sigmaX=float(soft_radius)),
-                            -wide_limit, wide_limit)
+                            -wl, wl)
         lab[:, :, 0] = np.clip(l + weight * high + wide_weight * wide_high, 0, 255)
     else:
         lab[:, :, 0] = np.clip(l + weight * high, 0, 255)
@@ -248,25 +259,51 @@ def edge_aware_sharpen(
     return composite_masked(rgb, out, region_mask)
 
 
+# The head/hair region's geometry: an ELLIPSE centred above the face box, not a rectangle.
+#
+# This used to be `mask[y0:y1, x0:x1] = 1.0` - a hard rectangle reaching 0.55w sideways, 0.9h
+# above the face box and 0.2h below it - blurred by sigma = w/9. That is the "square" users
+# reported around the restored area, and the reason a soft feather did not save it is that the
+# feather was straight. Hair refinement is the only stage that treats this region and nothing
+# treats the pixels next to it, so its boundary is a step in sharpness; a step laid along a
+# perfectly straight line hundreds of pixels long is read by the eye as a drawn edge, while the
+# identical step laid along a curve is read as shading. The shape has to be wrong-looking for a
+# head before the ramp can hide it.
+#
+# Measured against the reported output (588x708, face box 200x270 at (200,150)) the old mask
+# crossed 0.5 at x=90, x=510 and y=473 - the three sides of the box in the picture.
+_HAIR_AX, _HAIR_AY, _HAIR_UP = 0.85, 1.00, 0.30
+_HAIR_SIGMA_FRAC = 1.0 / 5.0
+
+
 def hair_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
-    """Approximate head/hair band around detected faces (expanded up + sideways)."""
+    """Soft head/hair region around each detected face - an ellipse, feathered wide.
+
+    Sized so the band still covers what it always covered: 0.35w past the sides of the face box,
+    0.80h above it (hair) and 0.20h below (jawline), but as a head-shaped oval that tapers at
+    the top and the sides instead of a box that stops dead.
+    """
     h, w = shape[:2]
     mask = np.zeros((h, w), np.float32)
     for b in face_boxes:
-        ex, ey = int(b.w * 0.55), int(b.h * 0.9)
-        x0 = max(0, b.x - ex)
-        y0 = max(0, b.y - ey)          # extend well above the box for hair
-        x1 = min(w, b.x + b.w + ex)
-        y1 = min(h, b.y + b.h + int(b.h * 0.2))
-        mask[y0:y1, x0:x1] = 1.0
+        cx = int(b.x + b.w * 0.5)
+        cy = int(b.y + b.h * (0.5 - _HAIR_UP))     # the head sits above the face box
+        cv2.ellipse(mask, (cx, cy),
+                    (max(1, int(b.w * _HAIR_AX)), max(1, int(b.h * _HAIR_AY))),
+                    0, 0, 360, 1.0, -1)
     if mask.max() > 0:
         # Feather relative to the HEAD, not the frame. A frame-relative sigma made this band
         # depend on how big the photo happens to be - 100 px of blur on a 6000 px image, which
         # smears the band far past the hair - and it made the mask impossible to reproduce from
         # a crop, which is what the chunked path needs it to be.
+        #
+        # Wider than it was (w/5 against w/9) because this boundary separates "sharpened" from
+        # "untouched" on a photograph where those two can look very different, and the ramp is
+        # what converts the difference into shading. It costs nothing: the ellipse is far larger
+        # than the feather, so the core of the band still reaches a full 1.0.
         span = max(b.w for b in face_boxes)
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(3.0, span / 9.0))
-    return mask
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(6.0, span * _HAIR_SIGMA_FRAC))
+    return np.clip(mask, 0.0, 1.0)
 
 
 def refine_hair(rgb: np.ndarray, face_boxes: List, strength: float, out_scale: float = 1.0,
@@ -311,8 +348,11 @@ def face_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
 # chunked.union_rect must pad per axis rather than with one scalar. See chunked.union_rect.
 face_region_mask.reach = (0.12, 0.18)
 face_region_mask.sigma = (6.0, 1.0 / 9.0)
-hair_region_mask.reach = (0.55, 0.90)
-hair_region_mask.sigma = (3.0, 1.0 / 9.0)
+# The hair ellipse reaches (AX - 0.5) of the box width past its sides and (AY + UP - 0.5) of the
+# box height above its top. Derived from the constants rather than restated, so the crop and the
+# mask cannot drift apart the next time the shape is tuned.
+hair_region_mask.reach = (_HAIR_AX - 0.5, _HAIR_AY + _HAIR_UP - 0.5)
+hair_region_mask.sigma = (6.0, _HAIR_SIGMA_FRAC)
 
 
 def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float,
@@ -321,10 +361,20 @@ def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float,
 
     Everywhere else the sharpener protects skin, which is right for a photo as a whole but
     leaves the face the softest thing in the frame - the opposite of what someone looking at a
-    portrait wants. Here that protection is off. Edge confidence still does the discriminating:
-    flat cheeks carry almost no gradient and stay smooth, while the eyes and lash line - which
-    carry the most - get the full amount. The halo clamp is tighter than the global pass because
-    the eye sockets are exactly where ringing would be visible.
+    portrait wants. Here that protection is HALVED rather than switched off. Edge confidence
+    still does the discriminating: the eyes, the lash line and the lip edge carry the most
+    gradient in a face and are not skin-coloured, so they still receive the full amount; what
+    the half guard takes away is the part of this pass that was landing on skin.
+
+    That part was a defect and not a feature. A blemish is a small, low-contrast, skin-coloured
+    blob, which is exactly what an unguarded local sharpener finds most rewarding: it deepens
+    every spot and mark on the face and hands back a portrait that reads as dirtier than the
+    one that went in. Clear mode showed it worst, because Clear does no skin work at all and
+    this was the only stage touching a cheek. `blemish_clean` runs before this and takes the
+    marks out; the guard is what stops this pass putting them back.
+
+    The halo clamp is tighter than the global pass because the eye sockets are exactly where
+    ringing would be visible.
     """
     if strength <= 0.02 or not face_boxes:
         return rgb
@@ -332,7 +382,7 @@ def face_clarity(rgb: np.ndarray, face_boxes: List, strength: float,
         mask = face_region_mask(rgb.shape, face_boxes)
     if mask.max() <= 0:
         return rgb
-    return edge_aware_sharpen(rgb, strength=strength, protect_skin=False,
+    return edge_aware_sharpen(rgb, strength=strength, protect_skin=True, skin_guard=0.50,
                               region_mask=mask, halo_limit=10.0, edge_hi=edge_hi)
 
 
@@ -395,6 +445,163 @@ def reinject_texture(blended: np.ndarray, original: np.ndarray, amount: float = 
     orig_high = np.clip(o - cv2.GaussianBlur(o, (0, 0), sigmaX=1.4), -22, 22)
     skin = _skin_mask_wide(original)[..., None]
     return np.clip(b + amount * skin * orig_high, 0, 255).astype(np.uint8)
+
+
+def _feature_guard(shape: tuple, face_boxes: List) -> np.ndarray:
+    """How much of a face `blemish_clean` is allowed to correct: 1 on plain skin, ~0 on features.
+
+    Measured on the detector this guards, three of a face's dark features behave very
+    differently and only one of them needs geometry at all:
+
+      * eyes score ZERO already. Sclera, iris, pupil and lash line are all a long way outside the
+        Cr/Cb skin window, so `_skin_mask` removes them without help. The brow is the exception -
+        dark brown hair sits inside that window - but only weakly (0.24 of full detection on a
+        measured brow against 1.00 on a nostril), so it needs damping rather than exclusion.
+      * nostrils and the lip line score 1.00, the same as a real blemish. Nothing in the pixels
+        separates "small, dark, round and skin-coloured" from a nostril, because a nostril IS
+        that. Only where they are on a face separates them.
+
+    So the eye band is damped to 0.15 and the two bands that actually collide with the detector
+    are held at zero. Everything else - forehead, temples, the cheeks below the eye line, the
+    jaw, the chin, the sides of the mouth - is where blemishes live, and is left fully available.
+
+    Fractions are of the face box as the face detector draws it: eyes near 0.36 of its height,
+    the nose tip near 0.56, the mouth near 0.75.
+    """
+    h, w = shape[:2]
+    guard = np.ones((h, w), np.float32)
+    for b in face_boxes:
+        # (top, bottom, left, right, weight), as fractions of the face box.
+        for top, bottom, left, right, weight in (
+                (0.10, 0.48, -0.02, 1.02, 0.00),   # brows, eyes, the bridge between them
+                (0.48, 0.66, 0.30, 0.70, 0.00),    # nose tip and nostrils
+                (0.64, 0.90, 0.26, 0.74, 0.00)):   # lips and the philtrum
+            y0 = max(0, int(b.y + b.h * top))
+            y1 = min(h, int(b.y + b.h * bottom))
+            x0 = max(0, int(b.x + b.w * left))
+            x1 = min(w, int(b.x + b.w * right))
+            if y1 > y0 and x1 > x0:
+                np.minimum(guard[y0:y1, x0:x1], weight, out=guard[y0:y1, x0:x1])
+    span = max(b.w for b in face_boxes)
+    return cv2.GaussianBlur(guard, (0, 0), sigmaX=max(2.0, span / 20.0))
+
+
+def blemish_region_mask(shape: tuple, face_boxes: List) -> np.ndarray:
+    """Where a blemish pass is allowed to write: the face ellipse, with the features cut out.
+
+    This exists so `blemish_clean` never has to rebuild any geometry of its own. On the tiled
+    path `chunked.Runner.region` hands a stage a SLICE of one globally-sampled mask, and the
+    boxes that come with it are in the frame's coordinates rather than the tile's - so a stage
+    that draws its own bands from those boxes would place them at frame positions inside a tile
+    array, which is to say anywhere. Every other face-local stage here avoids that by using the
+    mask it is given and building nothing (see `skin_clean`, `face_clarity`, `refine_hair`, and
+    the same note in `filters._in_band`); folding the feature guard into a mask function keeps
+    this one honest by the same rule, and lets `chunked.union_rect` size the crop from the
+    published reach and sigma exactly as before.
+    """
+    return face_region_mask(shape, face_boxes) * _feature_guard(shape, face_boxes)
+
+
+# Identical to the face mask's: the guard only ever multiplies the ellipse DOWN, so it cannot
+# reach further than the ellipse does, and the crop the region stage takes is unchanged.
+blemish_region_mask.reach = face_region_mask.reach
+blemish_region_mask.sigma = face_region_mask.sigma
+
+
+def blemish_clean(rgb: np.ndarray, face_boxes: List, strength: float,
+                  mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """Take spots, marks and small blotches off skin - and leave the skin.
+
+    This is CLEANING, not flattery, which is why it runs in both modes while `skin_clean` runs
+    in Beautify only. "Clear this photo up" with every spot still on the face - and deepened by
+    the clarity pass afterwards - is not a cleaned photo, and that is what was being returned.
+
+    Detection is a morphological TOP-HAT, and the choice matters. A top-hat is the image minus
+    its own opening, so it keeps only the structures that do not survive erosion by the
+    structuring element: bright blobs SMALLER than the element and nothing else. Run on inverted
+    luminance, "bright blob smaller than the element" is exactly a blemish - and, just as
+    importantly, a large dark region is not one. Hair, the shadow side of a face, a dark
+    background and a shirt all survive the opening intact and score zero, with no threshold
+    anywhere to tune. The element is sized from the FACE, so the definition of "small" travels
+    correctly from a 90 px face to a 900 px one.
+
+    Two more terms make the result safe rather than merely selective:
+
+      * the same top-hat on LAB's `a` channel, so a mark that is red rather than dark - which is
+        most of them - is found as well;
+      * `_feature_guard`, because a brow and a lash line are also small and dark, and chroma
+        cannot tell them from a mole.
+
+    The FILL is a median, not the opening the detection came from. An opening reconstructs a
+    spot from the brightest skin around it and leaves a flat pale disc where the mark was; the
+    median at the same radius reconstructs it from the skin's own local tone, which is what the
+    cheek would have looked like without the mark. Luminance may be lifted a long way and pushed
+    down barely at all, so this can only ever remove a dark mark, never draw one.
+
+    `rgb` is returned untouched wherever no blemish was found - see `composite_masked`.
+    """
+    if strength <= 0.02 or not face_boxes:
+        return rgb
+    # `mask`, when supplied, is already the guarded face mask sampled from the whole frame; the
+    # boxes that come with it are in frame coordinates, so nothing spatial may be derived from
+    # them here. Only `span` is, and a width is the same number in either space.
+    face = (blemish_region_mask(rgb.shape, face_boxes) if mask is None
+            else np.clip(mask, 0.0, 1.0))
+    if face.max() <= 0:
+        return rgb
+
+    span = float(max(b.w for b in face_boxes))
+    # TWO radii, and keeping them apart is what makes this work at all.
+    #
+    # `k_det` sizes the structuring element, and so defines "small": the top-hat sees a blob only
+    # while the opening can erase it, which means the element has to be at least as wide as the
+    # blemish INCLUDING its soft edge. A mark that reads as 8 px of core carries another 8 of
+    # falloff, so an element sized to the core finds almost nothing - measured at 1-14% of a spot
+    # removed, which is what "the tool does not clear the face" looks like from the inside.
+    #
+    # `k_fill` sizes the median that supplies the replacement skin, and it has to be much LARGER
+    # than the blemish for the opposite reason: a median whose window the blemish fills is a
+    # median OF the blemish, so the correction reconstructs the spot from itself. At twice the
+    # detection radius the mark is under a fifth of the window and the median is the cheek.
+    k_det = int(np.clip(round(span / 11.0), 5, 31)) | 1
+    k_fill = int(np.clip(2 * k_det + 1, 9, 61)) | 1
+    se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_det, k_det))
+
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+
+    dark = cv2.morphologyEx(255 - l, cv2.MORPH_TOPHAT, se).astype(np.float32)
+    red = cv2.morphologyEx(a, cv2.MORPH_TOPHAT, se).astype(np.float32)
+    # Thresholds in levels, set above the pore/grain floor a normal cheek carries at this radius:
+    # measured 4-5 levels of `dark` and 3-4 of `red` on clean, grainy skin against 13-27 and 5-9
+    # on a blemish. The floors are what keep this from correcting grain across an entire cheek.
+    score = np.clip((dark - 5.0) / 12.0, 0.0, 1.0) + 0.8 * np.clip((red - 3.5) / 8.0, 0.0, 1.0)
+    score = np.clip(score, 0.0, 1.0)
+    # Grow the detection before masking it. A top-hat responds to the blemish's CORE and falls
+    # away over its edge, so correcting exactly what it returns leaves the spot's halo behind as
+    # a soft ring - the mark still visible, only blurrier. Dilating by half the element covers
+    # the falloff; the feather afterwards is deliberately narrow, because a wide one erodes the
+    # peak of a small blob and takes most of the correction with it.
+    score = cv2.dilate(score, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (max(3, k_det // 2) | 1,) * 2))
+    score = cv2.GaussianBlur(score, (0, 0), sigmaX=max(1.0, k_det / 8.0))
+
+    spot = score * face * _skin_mask(rgb)
+    if float(spot.max()) <= 0.02:
+        return rgb
+
+    w = (spot * float(min(1.0, max(0.0, strength))))[..., None]
+    lf = np.stack([l, a, b], axis=-1).astype(np.float32)
+    ref = np.stack([cv2.medianBlur(l, k_fill), cv2.medianBlur(a, k_fill),
+                    cv2.medianBlur(b, k_fill)], axis=-1).astype(np.float32)
+    delta = ref - lf
+    # Asymmetric on L (lift a dark mark by up to 44 levels, darken by at most 5) and symmetric
+    # but small on chroma, which is enough to take the red out of a spot and nowhere near enough
+    # to move a complexion.
+    delta[..., 0] = np.clip(delta[..., 0], -5.0, 44.0)
+    delta[..., 1:] = np.clip(delta[..., 1:], -14.0, 14.0)
+    out = cv2.cvtColor(np.clip(lf + delta * w, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return composite_masked(rgb, out, spot)
 
 
 def skin_clean(rgb: np.ndarray, face_boxes: List, strength: float,
@@ -522,7 +729,7 @@ def auto_exposure(rgb: np.ndarray, target: float = 0.46, max_gain: float = 3.2,
 
 def body_clarity(rgb: np.ndarray, exclude_mask: Optional[np.ndarray], strength: float,
                  edge_hi: Optional[float] = None, soft_radius: float = 0.0,
-                 soft_gain: float = 0.0) -> np.ndarray:
+                 soft_gain: float = 0.0, wide_limit: Optional[float] = None) -> np.ndarray:
     """Give shape back to everything that is NOT a face: hands, clothing, objects, background.
 
     Only the face goes through the face model; the rest of the frame is whatever the upscaler
@@ -539,7 +746,8 @@ def body_clarity(rgb: np.ndarray, exclude_mask: Optional[np.ndarray], strength: 
             return rgb
     return edge_aware_sharpen(rgb, strength=strength, protect_skin=False,
                               region_mask=mask, halo_limit=12.0, edge_hi=edge_hi,
-                              soft_radius=soft_radius, soft_gain=soft_gain)
+                              soft_radius=soft_radius, soft_gain=soft_gain,
+                              wide_limit=wide_limit)
 
 
 def soft_glow(rgb: np.ndarray, face_boxes: List, amount: float,
@@ -613,6 +821,14 @@ def premium_finish(rgb: np.ndarray, tone_depth: float, is_grayscale: bool = Fals
     pointwise curve, which is identical on a tile by construction and needs nothing.
     """
     t = float(max(0.0, min(1.0, tone_depth)))
+    if t <= 0.02:
+        # Clear mode asks for a faithful clean-up: no tone curve, no vibrance, no white balance.
+        # It was still getting the closing CLAHE, because that pass ran unconditionally and its
+        # clip limit only *starts* at 1.0 when t is zero - it does not switch off. Local contrast
+        # is a grade like any other, and on a face it is the one that reads worst: it deepens
+        # every shadow it finds, which on skin means every spot and every crease. A "clear only"
+        # result coming back darker and dirtier around the face than the original was this line.
+        return rgb
     out = rgb
     if not is_grayscale:
         out = _neutral_white_balance(out, amount=0.25 * t, means=wb_means)

@@ -71,17 +71,19 @@ Weights go in `models/` (`realesr-general-x4v3.pth`, `realesr-general-wdn-x4v3.p
 | `GET` | `/` | the web UI |
 | `GET` | `/health` | readiness, device, which models are loaded |
 | `GET` | `/api/filters` | the premium looks, and which one applies by default |
-| `POST` | `/api/enhance` | multipart `image=@photo.jpg`, optional `mode=beautify\|clear`, optional `filter=<id>` → `202` + job id |
+| `POST` | `/api/enhance` | multipart `image=@photo.jpg`, optional `mode=portrait\|beautify\|clear` (default `portrait`), optional `filter=<id>` → `202` + job id |
 | `GET` | `/api/jobs/{id}` | status, stage, progress, queue position, and the result metadata when done |
 | `GET` | `/api/jobs/{id}/result` | the beautified image |
 | `GET` | `/api/jobs/{id}/original` | the original (the before/after slider uses it) |
+| `GET` | `/api/jobs/{id}/base` | the enhanced photo with **no look on it** — what the browser previews looks from |
 | `POST` | `/api/jobs/{id}/filter` | `filter=<id>` → `202`; re-renders under a different look, or `none` |
 | `DELETE` | `/api/jobs/{id}` | delete the files now |
 
 ```bash
 curl http://127.0.0.1:8000/api/filters
-curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"                 # beautify + default look
-curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "mode=clear" # clear only
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg"                    # portrait + default look
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "mode=beautify"
+curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "mode=clear"    # clear only
 curl -X POST http://127.0.0.1:8000/api/enhance -F "image=@photo.jpg" -F "filter=silk"
 curl http://127.0.0.1:8000/api/jobs/<id>
 curl -o out.jpg http://127.0.0.1:8000/api/jobs/<id>/result
@@ -98,25 +100,38 @@ refused — being large is a reason to work differently, not a reason to hand th
 
 ---
 
-## The two modes
+## The three modes
 
-Both run the same restoration - upscale, denoise, face restoration, face clarity. They differ
-only in what happens to the skin and the colour afterwards.
+All three run the same restoration - upscale, denoise, face restoration, face clarity - over
+every pixel of the frame. They differ only in what happens to the skin and the colour afterwards.
 
-| | Beautify (default) | Clear only |
-| --- | --- | --- |
-| Restore + denoise + sharpen | yes | yes |
-| Face restoration + eye/lip clarity | yes | yes |
-| Skin evened out | yes | **no** |
-| Soft highlight glow on skin | yes | **no** |
-| Tone curve, vibrance, white balance | full (0.46) | **none** |
-| Original skin texture kept | less | **more** (+0.18) |
+| | Portrait (default) | Beautify | Clear only |
+| --- | --- | --- | --- |
+| Restore + denoise + sharpen | yes | yes | yes |
+| Face restoration + eye/lip clarity | yes | yes | yes |
+| Spots and blemishes removed | yes | yes | **yes** |
+| Soft-focus recovery on clothing and hair | **top of range** | standard | standard |
+| Skin evened out | **half** | full | **no** |
+| Soft highlight glow on skin | half | full | **no** |
+| Tone curve, vibrance, white balance | 0.30 | 0.46 | **none** |
+| Original skin texture kept | more | less | **most** (+0.18) |
+
+**Portrait** is the default because it is the one that answers "clean up my photo" without a
+follow-up question: the whole frame is restored, the recovery of a soft shirt or a soft hairline
+runs at the top of its bounded range, and the cosmetic half is deliberately held back to about
+half of Beautify so the result still reads as the person rather than as a filter.
 
 Measured on a grainy 240x240 portrait, beautify comes out ~11% more saturated and ~11% higher
 contrast than clear, while clear retains more raw skin texture.
 
 Pick **Clear only** when the photo should stay exactly itself, just cleaner - documents of
 people, evidence, product shots, anything where a flattering grade would be wrong.
+
+Note the one row that is **yes** on both sides. Evening a complexion out is cosmetic and Clear
+mode is right to refuse it; taking a spot off a cheek is repair, in the same sense that removing
+a dust mark is, so it runs in both. Clear mode used to leave every mark in place *and* run an
+unguarded sharpener over the face afterwards, which found each one and deepened it - a photo that
+came back reading dirtier than the one that went in. See `ops.blemish_clean`.
 
 ---
 
@@ -143,7 +158,27 @@ default is no look at all — its whole promise is that nothing was styled.
 | Sculpted Detail | depth and definition; eyes and brows forward, skin left alone |
 | Even Tone | balances uneven skin tone and redness |
 | Rose Bloom | fuller lips, sharper facial detail, soft warm base |
+| Cinematic | teal shadows against warm skin — the film-trailer grade |
+| Morning Dawn | barely there: soft light, open shadows, colour left as photographed |
+| Studio Noir | black and white through a warm filter; deep blacks, luminous skin |
 | Original | no look — the enhanced photo exactly as the pipeline produced it |
+
+**They apply instantly in the browser.** `/api/filters` publishes each look's grade parameters,
+not just its name, and `web/looks.js` is a port of the frame-wide half of `filters.py` - the same
+tone curve, the same hue-band saturation, the same CLAHE, the same vignette. Measured against the
+server's own output the preview is within about two levels out of 255 on most looks, three on the
+one that leans hardest on local contrast.
+
+Every look is rendered **once, up front**, from the un-styled base the job kept, while you are
+still looking at the result. A click is then an `<img>` swap and nothing else - **14 to 32 ms**
+from click to a decoded picture, measured in Chromium, against roughly two seconds before, when
+the strip disabled itself for the length of the server round trip. The chips are never disabled.
+
+The server render still happens, because the browser draws only the frame-wide half of a look and
+the file you download has to carry the face work as well - skin, lips, eyes, glow. It runs behind
+the picture, debounced and coalesced, so browsing seven looks costs **one** render rather than
+seven, and it swaps itself in when it lands. Press Download before it has and the button waits
+for it - about a second - rather than handing over the previous look's file.
 
 Three rules keep them on the right side of natural:
 
@@ -172,9 +207,11 @@ automatically instead of being a question put to the user.
 ```
 decode → analyse → rescue exposure (dark photos only) → re-analyse → plan
   → de-block, if the input is heavily JPEG-compressed
-  → GFPGAN face restoration on a Real-ESRGAN background   (photos with faces that need it)
-    or plain Real-ESRGAN restoration                      (everything else)
+  → Real-ESRGAN restoration over the WHOLE frame, tile by tile if the photo is large
+  → GFPGAN face restoration, blended onto it under this pipeline's own radial mask
   → chroma denoise, if the result is still noisy
+  → blemish removal: spots and marks off the skin, in BOTH modes
+  → clarity inside the face, then across everything that is not a face
   → hair / fine-texture refinement around detected heads
   → photographic finish: white balance, highlight recovery, shadow lift, midtone
     S-curve, skin-protected vibrance, a touch of local contrast
@@ -199,6 +236,16 @@ Decisions the pipeline makes on its own:
   visibly crawled). The lift applied is itself the evidence, so it sets a floor under the
   effective noise figure, and a dedicated chroma pass cleans the colour blotching at reduced
   scale, where the blobs are actually small enough to filter. Luminance is left alone.
+- **Where the face is pasted back.** GFPGAN aligns each face to a 512x512 crop and pastes the
+  result back through the inverse of that alignment, which carries a rotation - so anything
+  square in aligned space returns as a *rotated square* in the photograph. facexlib builds that
+  paste mask from a face-parsing network, and on a degraded face the network is unreliable:
+  measured on the sample portrait blurred at sigma 3.4 it labelled 45% of the crop "lower lip",
+  producing a mask that stood at 1.000 at the crop's own edge on three of four sides. That hard
+  straight edge is the box users reported drawn across the head. The paste is therefore done
+  here instead, under a **radial** mask that has no straight edge anywhere in it and reaches zero
+  well before the crop border whatever the parser believes - and, as a bonus, one that restores
+  the hair and jaw inside its circle instead of discarding them.
 - **Faces.** Face restoration is attempted on every photo, and the **face model's own detector**
   decides whether there is a face - not OpenCV's Haar cascade, which is unreliable enough to
   miss an obvious portrait entirely. Every face it finds is restored. If it finds none, the

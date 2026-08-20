@@ -34,6 +34,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/static/styles.css" />
+
+<!-- The hero's before/after is now the LCP element. Preload both halves: the "after"
+     is half-visible at the 50% default split, so it is not a below-the-fold asset. -->
+<link rel="preload" as="image" type="image/webp" href="/static/samples/portrait-before.webp" fetchpriority="high" />
+<link rel="preload" as="image" type="image/webp" href="/static/samples/portrait-after.webp" />
 </head>
 <body>
 
@@ -110,8 +115,57 @@
       </ul>
     </div>
 
-    <!-- ==================================================== WORKSPACE -->
-    <div class="workspace-wrap reveal-scale" id="workspace" data-reveal>
+    <!-- ============================================ REAL BEFORE / AFTER -->
+    <!-- The hero's proof: a genuine upload and its genuine pipeline output. Same framing,
+         same 880x1100 pixel grid, so the two halves overlay exactly and the divider never
+         reveals a shifted photo. Sized by --hc-h / --hc-w in styles.css, so a 4:5 portrait
+         can never blow the hero's height out. -->
+    <figure class="hero-compare reveal-scale" data-reveal>
+      <div class="demo hc-frame" id="hero-compare" role="group"
+           aria-label="A real photograph before and after Khushify AI. Drag to compare.">
+        <img class="hc-img" src="/static/samples/portrait-before.webp"
+             alt="A portrait before enhancement &mdash; soft focus, uneven skin, flat colour"
+             width="880" height="1100" loading="eager" fetchpriority="high"
+             decoding="async" draggable="false" />
+        <div class="demo-after" id="hero-compare-after">
+          <img class="hc-img" src="/static/samples/portrait-after.webp"
+               alt="The same portrait after enhancement &mdash; sharp, clean and naturally toned"
+               width="880" height="1100" loading="eager" fetchpriority="high"
+               decoding="async" draggable="false" />
+        </div>
+        <div class="demo-handle" id="hero-compare-handle" role="slider" tabindex="0"
+             aria-label="Comparison position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+          <span class="handle-line"></span>
+          <span class="handle-grip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6-4 6 4 6M15 6l4 6-4 6"/></svg>
+          </span>
+        </div>
+        <span class="cmp-label left">Before</span>
+        <span class="cmp-label right">After</span>
+        <span class="hc-hint" aria-hidden="true">Drag to compare</span>
+      </div>
+      <figcaption class="hc-cap">
+        <span class="hc-badge">Real result</span>
+        One upload, one pass, nothing retouched by hand.
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="scroll-cue" aria-hidden="true"><span></span></div>
+</section>
+
+<!-- ============================================================ ENHANCE -->
+<!-- The workspace, lifted out of the hero into its own full-width section directly after
+     it. Nothing inside the workspace is touched: the hero simply closes early and this
+     section opens around the existing markup, so every id app.js reads is byte-identical.
+
+     TASK 2 OWNS THE THREE LINES BELOW (the section shell and its heading/copy). Replace
+     them with its version, but id="workspace" MUST stay on the <section> element itself -
+     it is the target of the nav link, both hero CTAs, the header CTA, the footer link and
+     the closing CTA, and ui.js reads its offsetTop for the active-nav highlight. -->
+<section class="section enhance" id="workspace">
+  <div class="container">
+    <div class="workspace-wrap reveal-scale" data-reveal>
       <div class="workspace">
         <div class="ws-head">
           <div>
@@ -156,7 +210,14 @@
           <fieldset class="modes">
             <legend class="modes-legend">What should it do?</legend>
             <label class="mode">
-              <input type="radio" name="mode" value="beautify" checked />
+              <input type="radio" name="mode" value="portrait" checked />
+              <span class="mode-body">
+                <span class="mode-name">Portrait <span class="mode-tag">recommended</span></span>
+                <span class="mode-desc">Restores the whole photo &mdash; face, hair, clothing and all &mdash; and flatters it lightly.</span>
+              </span>
+            </label>
+            <label class="mode">
+              <input type="radio" name="mode" value="beautify" />
               <span class="mode-body">
                 <span class="mode-name">Beautify</span>
                 <span class="mode-desc">Clean it up, even out the skin, lift the colour and tone.</span>
@@ -183,7 +244,7 @@
           <div class="actions">
             <button class="btn btn-secondary" id="btn-change">Change</button>
             <!-- app.js overwrites this button's textContent: text-only, icon via CSS ::before -->
-            <button class="btn btn-primary btn-sparkle" id="btn-enhance">Beautify</button>
+            <button class="btn btn-primary btn-sparkle" id="btn-enhance">Enhance photo</button>
           </div>
         </section>
 
@@ -268,8 +329,6 @@
       <p class="ws-foot">Your photo never leaves this machine.</p>
     </div>
   </div>
-
-  <div class="scroll-cue" aria-hidden="true"><span></span></div>
 </section>
 
 <!-- ============================================================ TRUST -->
@@ -299,24 +358,31 @@
   <div class="container">
     <div class="section-head">
       <p class="kicker reveal" data-reveal>THE DIFFERENCE</p>
-      <h2 class="reveal" data-reveal data-delay="1">See what the AI actually changes</h2>
+      <h2 class="reveal" data-reveal data-delay="1">Look closer. The texture is still hers.</h2>
       <p class="lede reveal" data-reveal data-delay="2">
-        A real photograph, one upload, nothing retouched by hand. Drag the divider &mdash; the
-        skin is evened out but the freckles and the moles are still there, and the wall, the
-        knit and every hair strand come up with it.
+        The same photograph you dragged at the top, cropped at 100% &mdash; actual pixels,
+        nothing retouched by hand. Drag the divider: the lashes and the iris resolve, the hair
+        separates into strands, the grain and the colour blotching go. The skin is evened out,
+        so the freckles sit back &mdash; but they are still freckles, and the mole on her cheek
+        is untouched. Erasing them is the easy way to look clean. This is the other one.
       </p>
     </div>
 
-    <div class="sample-wrap reveal-scale" data-reveal>
-      <div class="demo sample-frame" id="demo" role="group"
-           aria-label="Before and after on a real photograph">
-        <img class="sample-img" src="/static/samples/portrait-before.webp"
-             alt="The original photograph, before enhancement"
-             width="880" height="1100" loading="lazy" decoding="async" draggable="false" />
+    <!-- A DETAIL crop, deliberately not the full frame again: the hero already carries the
+         whole-photograph comparison, and repeating it here would say nothing new. This is a
+         1:1 window on the eyes and the freckled cheek, where the only question that matters
+         - "did it just blur her into plastic?" - is answerable by eye.
+         Ids stay #demo / #demo-after / #demo-handle, so ui.js needs no change for this one. -->
+    <div class="detail-wrap reveal-scale" data-reveal>
+      <div class="demo detail-frame" id="demo" role="group"
+           aria-label="A 100% detail crop, before and after. Drag to compare.">
+        <img class="detail-img" src="/static/samples/detail-before.webp"
+             alt="A 100% crop of the original: the eyes and cheek, soft and blotchy, lashes unresolved"
+             width="1200" height="900" loading="lazy" decoding="async" draggable="false" />
         <div class="demo-after" id="demo-after">
-          <img class="sample-img" src="/static/samples/portrait-after.webp"
-               alt="The same photograph after enhancement"
-               width="880" height="1100" loading="lazy" decoding="async" draggable="false" />
+          <img class="detail-img" src="/static/samples/detail-after.webp"
+               alt="The identical crop after enhancement: lashes, iris and individual hair strands resolved, the skin cleared without being smoothed flat"
+               width="1200" height="900" loading="lazy" decoding="async" draggable="false" />
         </div>
         <div class="demo-handle" id="demo-handle" role="slider" tabindex="0"
              aria-label="Comparison position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
@@ -327,12 +393,15 @@
         </div>
         <span class="cmp-label left">Before</span>
         <span class="cmp-label right">After</span>
+        <span class="detail-zoom" aria-hidden="true">100% crop &middot; actual pixels</span>
       </div>
     </div>
 
-    <ul class="demo-tags reveal" data-reveal>
-      <li>Face restored</li><li>Skin evened, texture kept</li><li>Hair &amp; knit recovered</li>
-      <li>2&times; upscaled</li>
+    <ul class="demo-tags detail-tags reveal" data-reveal>
+      <li data-mark="up">Lashes &amp; iris resolved</li>
+      <li data-mark="up">Hair separated into strands</li>
+      <li data-mark="keep">Freckles softened, not erased</li>
+      <li data-mark="gone">Grain &amp; colour blotching gone</li>
     </ul>
   </div>
 </section>
@@ -394,24 +463,35 @@
 <section class="section modes-section">
   <div class="container">
     <div class="section-head">
-      <p class="kicker reveal" data-reveal>TWO MODES</p>
-      <h2 class="reveal" data-reveal data-delay="1">Flattering, or faithful</h2>
+      <p class="kicker reveal" data-reveal>THREE MODES</p>
+      <h2 class="reveal" data-reveal data-delay="1">Whole photo, flattering, or faithful</h2>
       <p class="lede reveal" data-reveal data-delay="2">
-        Both run identical restoration. They differ only in what happens to skin and colour afterwards.
+        All three run identical restoration on every pixel of the frame. They differ only in what
+        happens to skin and colour afterwards.
       </p>
     </div>
 
     <div class="mode-compare">
       <article class="mode-card reveal-left" data-reveal>
-        <h3>Beautify <span class="tag">Default</span></h3>
-        <p>Everything on the right, plus evened-out skin, a soft highlight glow and a full tone
-           and colour grade.</p>
+        <h3>Portrait <span class="tag">Default</span></h3>
+        <p>The whole photograph comes back &mdash; face, hair, clothing and background &mdash;
+           with the soft-focus recovery at the top of its range and only half the skin work, so
+           it still looks like the person.</p>
+        <ul class="ticks">
+          <li>Restore, denoise, sharpen</li><li>Face &amp; eye clarity</li>
+          <li>Clothing and hair recovered</li><li>Light grade, light skin work</li>
+        </ul>
+      </article>
+      <article class="mode-card reveal" data-reveal data-delay="1">
+        <h3>Beautify</h3>
+        <p>The same restoration, plus fully evened-out skin, a soft highlight glow and a complete
+           tone and colour grade.</p>
         <ul class="ticks">
           <li>Restore, denoise, sharpen</li><li>Face &amp; eye clarity</li>
           <li>Skin evened out</li><li>Glow, tone curve, vibrance</li>
         </ul>
       </article>
-      <article class="mode-card reveal-right" data-reveal>
+      <article class="mode-card reveal-right" data-reveal data-delay="2">
         <h3>Clear only</h3>
         <p>The same restoration with none of the flattery — for when a photo should stay exactly
            itself, only cleaner.</p>
@@ -620,6 +700,7 @@
   </div>
 </footer>
 
+<script src="/static/looks.js"></script>
 <script src="/static/ui.js"></script>
 <script src="/static/app.js"></script>
 </body>

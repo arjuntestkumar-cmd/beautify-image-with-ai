@@ -548,7 +548,10 @@ kbd {
    Modes section
 ==================================== */
 .modes-section { background: var(--bg-primary); }
-.mode-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 940px; margin: 0 auto; }
+/* Three cards now (Portrait, Beautify, Clear). `auto-fit` rather than a fixed count so the
+   row collapses to two and then one on its own as the viewport narrows. */
+.mode-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 24px; max-width: 1160px; margin: 0 auto; }
 .mode-card { padding: 32px 30px; border-radius: var(--radius-lg); background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
 .mode-card:first-child { border-color: rgba(182,82,70,.3); box-shadow: 0 12px 40px rgba(141,44,31,.12); }
 .mode-card h3 { font-size: 21px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
@@ -610,7 +613,7 @@ kbd {
 
 .tech-visual { display: grid; place-items: center; min-height: 340px; }
 .orbit { position: relative; width: 300px; height: 300px; }
-.core { position: absolute; inset: 38%; border-radius: 50%; background: var(--grad-brand); box-shadow: 0 0 60px rgba(207, 111, 97, .7) 70%, transparent); animation: breathe 4s ease-in-out infinite; }
+.core { position: absolute; inset: 38%; border-radius: 50%; background: var(--grad-brand); box-shadow: 0 0 60px rgba(207, 111, 97, .7); animation: breathe 4s ease-in-out infinite; }
 @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(255,255,255,.13); }
 .ring-1 { inset: 22%; animation: spin 16s linear infinite; }
@@ -946,11 +949,46 @@ kbd {
 }
 .chip:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .chip:disabled { opacity: .5; cursor: progress; }
+.mode-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  background: rgba(182,82,70,.10); color: var(--primary);
+  font-size: 10.5px; font-weight: 650; letter-spacing: .02em; vertical-align: 1px;
+}
+.chip-text { display: flex; flex-direction: column; gap: 1px; }
 .chip-name { font-weight: 640; }
 .chip-tag { font-size: 11px; color: var(--text-muted); font-weight: 500; }
 .chip[aria-checked="true"] .chip-tag { color: var(--primary); }
 .done-looks { margin-top: 18px; }
-.looks.busy .chips { opacity: .6; pointer-events: none; }
+/* The look strip is never disabled. It used to grey out and swallow clicks for the whole
+   server round trip, which is exactly the moment someone is comparing two looks. The
+   picture now changes on the click and the server catches up behind it. */
+.btn.waiting { opacity: .75; pointer-events: none; }
+
+/* ---------- look swatches ----------
+   Each chip carries a square of the user's OWN photo with that look already rendered on it, by
+   looks.js, in the browser. The chip stays a plain labelled button until the swatch exists —
+   app.js adds `.with-thumb` only once a canvas has actually been painted — so a browser that
+   cannot give us the pixels (a tainted canvas, an image that would not decode) degrades to the
+   text chips this shipped with rather than to a row of empty boxes. */
+.chip-thumb { display: none; }
+.chip.with-thumb {
+  width: 116px; padding: 6px 6px 9px; gap: 0; white-space: normal; text-align: center;
+}
+.chip.with-thumb .chip-thumb {
+  display: block; width: 104px; height: 104px; border-radius: 10px; overflow: hidden;
+  background: var(--bg-tint); box-shadow: inset 0 0 0 1px rgba(72, 34, 26, .07);
+  transition: box-shadow .18s;
+}
+.chip.with-thumb .chip-thumb canvas { display: block; width: 100%; height: 100%; }
+.chip.with-thumb .chip-text { padding: 7px 2px 0; align-items: center; }
+.chip.with-thumb .chip-name { font-size: 12.5px; line-height: 1.25; }
+.chip.with-thumb[aria-checked="true"] .chip-thumb {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+@media (max-width: 560px) {
+  .chip.with-thumb { width: 96px; }
+  .chip.with-thumb .chip-thumb { width: 84px; height: 84px; }
+}
 
 /* ---------- real-photo comparison (THE DIFFERENCE) ---------- */
 /* Narrower than .demo-wrap because the sample is a PORTRAIT: at 900px wide it would stand
@@ -966,3 +1004,281 @@ kbd {
 /* The caption chips are not bound by the portrait's narrow column - let them use the row so
    they sit on one line instead of leaving an orphan underneath. */
 .showcase .demo-tags { max-width: 780px; margin-left: auto; margin-right: auto; }
+
+/* =====================================================================
+   HERO — the real before/after comparison
+   Replaces the upload workspace in the hero's right-hand column. The
+   workspace itself has moved, unchanged, into section#workspace below
+   the hero; nothing here touches an element app.js reads or writes.
+   ===================================================================== */
+
+/* Sized from the OUTSIDE in, and that is the whole trick.
+   The photos are PORTRAIT (880x1100, 4:5). If the frame were width-led it
+   would stand 700px tall in a 565px desktop column and push the fold off the
+   screen. So the FIGURE's width is the smallest of three things:
+       · the grid column                       (never overflows)
+       · a hard pixel cap  --hc-w              (never looks bloated)
+       · "the height we are willing to spend" x 0.8   (--hc-h * 4/5)
+   The frame then takes width:100% and its exact 880/1100 aspect-ratio, so
+   the rendered height is guaranteed <= --hc-h AND the ratio always matches
+   the file - object-fit never has to crop a single pixel.
+   Every breakpoint below only re-tunes those two custom properties. */
+.hero-compare {
+  --hc-h: clamp(400px, 54vh, 560px);   /* the tallest the photo may ever stand */
+  --hc-w: 480px;                       /* the widest it may ever be */
+  position: relative;
+  width: min(100%, var(--hc-w), calc(var(--hc-h) * 0.8));
+  margin: 0 auto;                      /* also resets <figure>'s UA margin */
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Rose-gold aura, so the photo reads as the hero's product shot rather than a
+   stray image dropped into the column. Decorative, behind the frame, inert.
+   z-index:-1 stays inside .hero-grid's stacking context (it has z-index:1),
+   so this can never paint over .hero-bg's orbs or under the page. */
+.hero-compare::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -30px -26px 10px;
+  border-radius: calc(var(--radius-xl) + 18px);
+  background: radial-gradient(58% 52% at 50% 24%, rgba(182, 82, 70, .22), transparent 72%);
+  filter: blur(28px);
+  pointer-events: none;
+}
+
+/* .demo already supplies overflow, cursor:ew-resize, user-select:none, the
+   border and the radius; only sizing and touch behaviour are new here.
+   NOTE ON ORDER: this block is appended AFTER the existing @media (max-width:720px)
+   and (max-width:420px) rules that set `.demo { aspect-ratio: 4/3 | 1/1 }`. Equal
+   specificity, later source position, so it wins at every width without !important. */
+.hc-frame {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 880 / 1100;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  background: var(--bg-tint);          /* warm placeholder while the webp decodes */
+  /* .demo sets touch-action:none. On a phone this frame fills most of the screen,
+     and `none` would trap a vertical swipe inside it - the page would refuse to
+     scroll. `pan-y` hands vertical panning back to the browser (which fires
+     pointercancel, and makeCompare already treats that as drag-end) while
+     horizontal drags still reach the slider. This is the fix that makes the
+     hero slider usable on touch. */
+  touch-action: pan-y;
+}
+
+/* Both halves must be laid out identically or the divider reveals a shifted photo. */
+.hc-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The frame ratio equals the file ratio, so this normally crops nothing. It is
+     insurance: if a future breakpoint ever changes the frame's shape, the crop
+     tightens on the face rather than slicing the top of her head off. */
+  object-position: 55% 30%;
+  display: block;
+}
+.hc-frame .demo-after { overflow: hidden; }
+
+/* "Drag to compare" - the affordance a static screenshot never needed. It nudges
+   three times and then holds; any pointer over the frame retires it. No JS.
+   Under prefers-reduced-motion the global reset collapses the duration and it
+   simply sits there, which is the correct fallback. */
+.hc-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 3;
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  line-height: 1.5;
+  color: #fff;
+  background: rgba(0, 0, 0, .5);
+  padding: 6px 13px;
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: hcNudge 3.4s var(--ease) 1s 3 both;
+  transition: opacity .3s var(--ease);
+}
+.hc-frame:hover .hc-hint,
+.hc-frame:active .hc-hint { opacity: 0; animation: none; }
+
+@keyframes hcNudge {
+  0%, 100% { transform: translateX(-50%);              opacity: .9; }
+  40%      { transform: translateX(calc(-50% - 8px));  opacity: 1; }
+  70%      { transform: translateX(calc(-50% + 8px));  opacity: 1; }
+}
+
+/* Caption: the one line that says this is not stock art. */
+.hc-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+.hc-badge {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--grad-brand);
+  padding: 5px 11px;
+  border-radius: 999px;
+  box-shadow: var(--shadow-brand);
+}
+
+/* --- >=1081: the two-column hero. The photo column is now a capped 4:5 portrait
+       rather than a full-bleed card, so hand the reclaimed width to the copy
+       instead of leaving it as a gutter. Must stay inside a min-width query, or
+       it would override the existing `@media (max-width:1080px) .hero-grid {1fr}`. */
+@media (min-width: 1081px) {
+  .hero-grid { grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr); gap: 64px; }
+  .hero-sub  { max-width: 560px; }
+}
+
+/* --- 1081-1200: same two columns, a shorter photo so the hero still fits a
+       1280x800 laptop without the CTAs scrolling away. */
+@media (max-width: 1200px) and (min-width: 1081px) {
+  .hero-compare { --hc-h: clamp(380px, 52vh, 520px); --hc-w: 440px; }
+}
+
+/* --- <=1080: the hero stacks (existing rule sets .hero-grid to 1fr). The photo
+       now has the full container to itself, so the pixel cap is what stops it
+       from becoming a 700px-tall wall under the copy. */
+@media (max-width: 1080px) {
+  .hero-compare { --hc-h: min(62vh, 600px); --hc-w: 460px; }
+}
+
+/* --- <=720 (large phone / small tablet) --- */
+@media (max-width: 720px) {
+  .hero-compare { --hc-h: min(64vh, 560px); --hc-w: 430px; gap: 12px; }
+  .hc-cap { font-size: 12.5px; }
+}
+
+/* --- <=560 (phone): effectively width-led now, because the container is
+       narrower than the height cap on nearly every handset. The vh term still
+       runs, so on a short phone the photo shrinks rather than swallowing the
+       screen. Drag stays horizontal-only; the page still scrolls vertically. */
+@media (max-width: 560px) {
+  .hero-compare { --hc-h: 66vh; --hc-w: 400px; }
+  .hc-frame { border-radius: var(--radius-lg); }
+  .hc-hint  { font-size: 11px; padding: 6px 11px; bottom: 12px; }
+}
+
+/* --- <=420 (390 / 375 / 360): the container itself (330-360px) is the binding
+       constraint; the caps just keep the vh term from overriding it. */
+@media (max-width: 420px) {
+  .hero-compare { --hc-h: 62vh; --hc-w: 340px; }
+}
+
+/* --- phone landscape: 380-520px of viewport height total. A portrait has to
+       give way here or nothing else is visible at all. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .hero-compare { --hc-h: 76vh; --hc-w: 300px; }
+  .hc-hint { display: none; }
+}
+
+
+/* =====================================================================
+   THE DIFFERENCE (section#showcase) — the 100% detail crop
+   Ids #demo / #demo-after / #demo-handle are unchanged, so ui.js's
+   existing makeCompare call keeps driving this slider untouched.
+   ===================================================================== */
+
+.detail-wrap { max-width: 980px; margin: 0 auto; }
+
+/* Landscape 4:3 on purpose: it is the visual opposite of the hero's portrait,
+   so the two sliders never read as the same block twice.
+   Same ordering note as .hc-frame - appended after the 720/420 `.demo`
+   aspect-ratio overrides, so this wins at every width. */
+.detail-frame {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1200 / 900;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  background: var(--bg-tint);
+  touch-action: pan-y;               /* same rationale as .hc-frame */
+}
+.detail-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 50%;
+  display: block;
+}
+.detail-frame .demo-after { overflow: hidden; }
+
+/* The "100% crop" badge, bottom-right so it never collides with the two
+   .cmp-label chips at the top or with the grip in the middle. */
+.detail-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  pointer-events: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(0, 0, 0, .5);
+  padding: 5px 10px;
+  border-radius: 7px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* Claim chips, each with a dot that says which KIND of claim it is: something
+   gained (brand), something deliberately preserved (green), something removed
+   (muted). Selector is `.showcase .detail-tags` because the existing
+   `.showcase .demo-tags { max-width: 780px }` further up is (0,2,0) and would
+   otherwise out-specify a bare `.detail-tags`. */
+.showcase .detail-tags { max-width: 900px; margin-left: auto; margin-right: auto; }
+.detail-tags li { display: inline-flex; align-items: center; gap: 8px; }
+.detail-tags li::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--primary);
+}
+.detail-tags li[data-mark="keep"]::before { background: var(--success); }
+.detail-tags li[data-mark="gone"]::before { background: var(--text-muted); }
+
+/* A 4:3 landscape crop is only ~250px tall on a phone, which throws away the
+   entire point of a detail shot. Below 560 the frame becomes a 4:5 window onto
+   the SAME two files - both halves crop identically, so the divider still lines
+   up perfectly - and the eyes and the freckled cheek fill the screen instead. */
+@media (max-width: 560px) {
+  .detail-frame { aspect-ratio: 4 / 5; border-radius: var(--radius-lg); }
+  .detail-img   { object-position: 46% 46%; }
+  .detail-zoom  { font-size: 10px; right: 10px; bottom: 10px; }
+}
+
+
+/* ---------------------------------------------------------------------
+   Dead rules left behind by this change (safe to delete, harmless to keep -
+   nothing in the document matches them any more):
+     .demo-wrap, .sample-wrap, .sample-frame, .sample-img,
+     .sample-frame .demo-after
+   --------------------------------------------------------------------- */

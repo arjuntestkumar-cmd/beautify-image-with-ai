@@ -71,9 +71,31 @@ class Look:
     eyes: float = 0.0          # clarity across the eye band only
     eye_light: float = 0.0     # luminance shaping of the eye, skin excluded
     vignette: float = 0.0      # a barely-there corner falloff
+    mono: float = 0.0          # 0 colour .. 1 black and white, with a warm-filter response
+
+    # Exactly the fields `apply_global` reads. The browser renders its instant preview from
+    # these and from nothing else, so a look cannot drift between the two: add a frame-wide term
+    # here and the preview gets it, add one that is NOT here and the preview will visibly not
+    # have it, which is the failure you want rather than the one you do not.
+    GRADE_FIELDS = ("warmth", "tint", "split", "exposure", "contrast", "lift", "vibrance",
+                    "sat_skin", "sat_cool", "clarity", "vignette", "mono")
 
     def public(self) -> dict:
-        return {"id": self.id, "name": self.name, "description": self.description}
+        """What /api/filters publishes.
+
+        `grade` is the frame-wide half of the look - the half that is a pointwise curve plus two
+        cheap spatial terms, and therefore the half a browser can reproduce exactly on a canvas
+        the moment someone clicks a chip. The face half (skin, lips, eyes, glow) needs the face
+        boxes and the model output, so it stays on the server and arrives when the re-render
+        does. Sending the numbers rather than a rendered swatch is what makes the preview instant
+        AND correct: there is one definition of "Golden Aura" and both sides read it.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "grade": {f: round(float(getattr(self, f)), 4) for f in self.GRADE_FIELDS},
+        }
 
 
 # The default. Chosen to be the one that flatters the widest range of photos without ever
@@ -86,58 +108,85 @@ LOOKS: Tuple[Look, ...] = (
          "No look at all - the enhanced photo exactly as the pipeline produced it."),
     Look("radiance", "Natural Radiance",
          "The default. Warm light, clean even skin that still has its pores, bright eyes.",
-         warmth=.32, split=.28, exposure=.12, contrast=.44, lift=.06,
-         vibrance=.44, sat_skin=.10, sat_cool=.18, clarity=.34,
-         skin_smooth=.36, skin_even=.42, skin_tone=.12, skin_bright=.22,
-         glow=.20, lips=.34, eyes=.34, eye_light=.40, vignette=.05),
+         warmth=.32, split=.30, exposure=.12, contrast=.38, lift=.10,
+         vibrance=.40, sat_skin=.10, sat_cool=.18, clarity=.26,
+         skin_smooth=.36, skin_even=.42, skin_tone=.12, skin_bright=.24,
+         glow=.20, lips=.34, eyes=.34, eye_light=.42, vignette=.05),
     Look("porcelain", "Soft Porcelain",
          "Airy and cool, over lifted blacks. The softest skin in the set.",
-         warmth=.10, tint=.20, split=-.30, exposure=.16, contrast=.08, lift=.46,
-         vibrance=.28, sat_skin=.12, sat_cool=-.34, clarity=.05,
+         warmth=.10, tint=.18, split=-.26, exposure=.16, contrast=.10, lift=.42,
+         vibrance=.28, sat_skin=.12, sat_cool=-.24, clarity=.05,
          skin_smooth=.72, skin_even=.58, skin_tone=.0, skin_bright=.24,
-         glow=.54, lips=.26, eyes=.22, eye_light=.30, vignette=.0),
+         glow=.52, lips=.26, eyes=.22, eye_light=.30, vignette=.0),
     Look("aura", "Golden Aura",
          "Sun through a window: golden highlights and a real bloom in the light.",
-         warmth=.62, split=.70, exposure=.06, contrast=.30, lift=.34,
-         vibrance=.40, sat_skin=.28, sat_cool=-.34, clarity=.08,
-         skin_smooth=.46, skin_even=.42, skin_tone=.28, skin_bright=.18,
-         glow=.82, lips=.32, eyes=.24, eye_light=.32, vignette=.10),
+         warmth=.60, split=.66, exposure=.06, contrast=.32, lift=.30,
+         vibrance=.38, sat_skin=.26, sat_cool=-.30, clarity=.10,
+         skin_smooth=.46, skin_even=.42, skin_tone=.26, skin_bright=.18,
+         glow=.70, lips=.32, eyes=.24, eye_light=.32, vignette=.10),
     Look("amber", "Warm Amber",
          "Golden hour. Deep warm shadows, rich colour, real contrast.",
-         warmth=.70, split=-.46, exposure=.0, contrast=.62, lift=.14,
-         vibrance=.44, sat_skin=.18, sat_cool=-.52, clarity=.24,
-         skin_smooth=.32, skin_even=.36, skin_tone=.24, skin_bright=.10,
+         warmth=.68, split=-.42, exposure=.02, contrast=.54, lift=.16,
+         vibrance=.42, sat_skin=.18, sat_cool=-.42, clarity=.22,
+         skin_smooth=.32, skin_even=.36, skin_tone=.24, skin_bright=.12,
          glow=.24, lips=.36, eyes=.26, eye_light=.30, vignette=.14),
     Look("crystal", "Crystal Clear",
          "Cool, bright and sharp. Blue skies, clear eyes, the least smoothing here.",
-         warmth=-.40, tint=-.10, split=.46, exposure=.18, contrast=.56, lift=.0,
-         vibrance=.40, sat_skin=-.04, sat_cool=.75, clarity=.62,
-         skin_smooth=.22, skin_even=.34, skin_tone=-.14, skin_bright=.18,
+         warmth=-.34, tint=-.08, split=.44, exposure=.18, contrast=.48, lift=.04,
+         vibrance=.38, sat_skin=-.02, sat_cool=.68, clarity=.50,
+         skin_smooth=.24, skin_even=.34, skin_tone=-.12, skin_bright=.20,
          glow=.12, lips=.26, eyes=.42, eye_light=.52, vignette=.0),
     Look("silk", "Silk Premium",
          "Matte editorial film: muted colour, raised blacks, silk-smooth skin.",
-         warmth=.36, split=.54, exposure=.02, contrast=.08, lift=.70,
-         vibrance=.22, sat_skin=.10, sat_cool=-.48, clarity=.04,
-         skin_smooth=.66, skin_even=.48, skin_tone=.16, skin_bright=.12,
+         warmth=.34, split=.50, exposure=.04, contrast=.12, lift=.60,
+         vibrance=.24, sat_skin=.10, sat_cool=-.38, clarity=.06,
+         skin_smooth=.66, skin_even=.48, skin_tone=.16, skin_bright=.14,
          glow=.34, lips=.26, eyes=.20, eye_light=.26, vignette=.08),
     Look("sculpt", "Sculpted Detail",
          "Contrast and depth. Eyes, brows and lashes forward, skin left textured.",
-         warmth=.04, tint=-.04, split=.22, exposure=-.08, contrast=.74, lift=.0,
-         vibrance=.30, sat_skin=-.06, sat_cool=.26, clarity=.70,
+         warmth=.04, tint=-.04, split=.24, exposure=-.06, contrast=.64, lift=.02,
+         vibrance=.30, sat_skin=-.06, sat_cool=.26, clarity=.58,
          skin_smooth=.20, skin_even=.30, skin_tone=.0, skin_bright=.08,
          glow=.06, lips=.34, eyes=.58, eye_light=.58, vignette=.12),
     Look("even", "Even Tone",
          "Corrective. Evens out blotches and redness and keeps the grade quiet.",
-         warmth=.14, tint=-.24, split=.16, exposure=.12, contrast=.32, lift=.08,
-         vibrance=.26, sat_skin=-.06, sat_cool=.10, clarity=.24,
+         warmth=.14, tint=-.18, split=.16, exposure=.12, contrast=.32, lift=.10,
+         vibrance=.26, sat_skin=-.06, sat_cool=.10, clarity=.22,
          skin_smooth=.46, skin_even=.82, skin_tone=-.10, skin_bright=.20,
          glow=.18, lips=.26, eyes=.28, eye_light=.32, vignette=.03),
     Look("bloom", "Rose Bloom",
          "Rose-tinted and soft, with the fullest lips in the set.",
-         warmth=.20, tint=.60, split=.10, exposure=.14, contrast=.22, lift=.30,
-         vibrance=.36, sat_skin=.32, sat_cool=-.26, clarity=.08,
+         warmth=.22, tint=.46, split=.12, exposure=.14, contrast=.24, lift=.28,
+         vibrance=.34, sat_skin=.30, sat_cool=-.22, clarity=.08,
          skin_smooth=.54, skin_even=.44, skin_tone=.18, skin_bright=.20,
-         glow=.50, lips=.85, eyes=.34, eye_light=.40, vignette=.06),
+         glow=.48, lips=.72, eyes=.34, eye_light=.40, vignette=.06),
+    # ---- added: the three grade families the set had no way to say -------------------------
+    # Teal-and-orange is the most recognisable colour grade there is, and it is not reachable by
+    # turning any of the looks above up: it needs the warm and the cool bands moving in OPPOSITE
+    # directions, which is exactly what `split` plus the two hue-band saturations are for.
+    Look("cinema", "Cinematic",
+         "Teal shadows against warm skin - the grade every film trailer is cut with.",
+         warmth=.30, tint=-.06, split=-.62, exposure=.0, contrast=.52, lift=.26,
+         vibrance=.30, sat_skin=.26, sat_cool=.42, clarity=.34,
+         skin_smooth=.34, skin_even=.38, skin_tone=.20, skin_bright=.12,
+         glow=.14, lips=.34, eyes=.44, eye_light=.46, vignette=.20),
+    # Low contrast, high lift, almost no saturation movement: the quiet, expensive-looking
+    # portrait that every editorial preset pack sells and that a "premium" set has to have.
+    Look("dawn", "Morning Dawn",
+         "Barely there. Soft light, open shadows, colour left almost exactly as photographed.",
+         warmth=.18, tint=.06, split=.34, exposure=.18, contrast=.06, lift=.36,
+         vibrance=.18, sat_skin=.06, sat_cool=-.10, clarity=.02,
+         skin_smooth=.44, skin_even=.40, skin_tone=.08, skin_bright=.26,
+         glow=.36, lips=.22, eyes=.20, eye_light=.28, vignette=.0),
+    # Black and white belongs in any portrait set and could not be expressed at all before:
+    # `mono` is the one term here that is not a colour move. The warm-filter weighting is the
+    # classic portrait choice - it lightens skin's reds and darkens a blue sky, which is what
+    # separates a photographed monochrome from a desaturated colour photo.
+    Look("noir", "Studio Noir",
+         "Black and white, shot as if through a warm filter. Deep blacks, luminous skin.",
+         exposure=.04, contrast=.58, lift=.14, clarity=.42, mono=1.0,
+         skin_smooth=.34, skin_even=.30, skin_bright=.16,
+         glow=.16, eyes=.50, eye_light=.54, vignette=.22),
 )
 
 BY_ID = {lk.id: lk for lk in LOOKS}
@@ -259,6 +308,10 @@ def _hue_band(hue: np.ndarray, centre: float, halfwidth: float) -> np.ndarray:
     d = np.abs(((hue - centre + 90.0) % 180.0) - 90.0)
     return np.clip(1.0 - d / halfwidth, 0.0, 1.0)
 
+
+# The warm-filter monochrome mix. Sums to 1.0, so it cannot change overall exposure; red is
+# weighted well above its 0.299 luminance share and blue well below its 0.114.
+MONO_WEIGHTS = np.array([[0.52, 0.36, 0.12]], np.float32)
 
 # Hue bands the looks are allowed to move independently. WARM is red-orange-yellow: skin, lips,
 # wood, sand, gold. COOL is green-cyan-blue-violet: sky, foliage, shade, denim.
@@ -402,6 +455,21 @@ def apply_global(rgb: np.ndarray, look: Look, lut: Optional[np.ndarray] = None,
     the real centre of the image rather than the centre of whatever tile it happens to be in.
     """
     out = rgb
+    if look.mono > 0.01:
+        # Monochrome through a WARM filter, not a desaturation. Weighting red above its
+        # luminance share is the choice a portrait photographer makes with an orange filter on
+        # the lens: skin carries most of its signal in red, so it comes up luminous instead of
+        # grey, while a blue sky and cool shadows drop away. Straight desaturation gives skin the
+        # same 0.30/0.59/0.11 treatment as everything else and is the reason a "B&W filter"
+        # usually reads as a colour photo with the colour switched off.
+        #
+        # Runs first, so anything the grade says about colour afterwards is a TONE on the
+        # monochrome (split toning a black and white is a real look) rather than a cast fighting
+        # the original colour. The face half of the look ran before this on the colour image, so
+        # skin, lips and eyes were all found while there was still chroma to find them by.
+        m = float(np.clip(look.mono, 0.0, 1.0))
+        grey = cv2.cvtColor(cv2.transform(out, MONO_WEIGHTS), cv2.COLOR_GRAY2RGB)
+        out = grey if m >= 0.999 else cv2.addWeighted(out, 1.0 - m, grey, m, 0.0)
     lut = tone_lut(look) if lut is None else lut
     if lut is not None:
         out = cv2.LUT(np.ascontiguousarray(out), lut)

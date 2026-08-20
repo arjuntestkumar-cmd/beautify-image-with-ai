@@ -60,7 +60,7 @@ class Job:
     deadline: Optional[float] = None      # wall-clock stop point, scaled to the photo
     original_path: Optional[str] = None
     original_name: str = "image"
-    mode: str = "beautify"
+    mode: str = "portrait"
     look: Optional[str] = None
     original_mime: str = "image/jpeg"
     original_bytes: int = 0
@@ -123,6 +123,16 @@ class Job:
                 "chunked": getattr(r, "chunked", False),
                 # Whether a different look can still be applied without re-running the models.
                 "canRestyle": bool(getattr(r, "base_path", None)),
+                # The un-styled enhanced image. The browser previews looks from this, so a
+                # swatch shows the grade on its own rather than on top of the look already on
+                # screen. Absent when no base was kept, which is also when canRestyle is false.
+                "baseUrl": (f"/api/jobs/{self.id}/base"
+                            if getattr(r, "base_path", None) else None),
+                # Where the faces ended up, in RESULT coordinates. The browser crops its filter
+                # swatches around the largest of them: a look is a statement about skin, light
+                # and eyes, and a 96 px square of somebody's shoulder says nothing about any of
+                # the three. Capped at four because that is more than a swatch can use.
+                "faceBoxes": [list(map(int, b)) for b in (r.face_boxes or [])[:4]],
             }
         if self.status == FAILED:
             out["error"] = {"code": self.error_code, "message": self.error_message}

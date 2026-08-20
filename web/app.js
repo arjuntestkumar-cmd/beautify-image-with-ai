@@ -19,7 +19,7 @@
   };
 
   const selectedMode = () =>
-    (document.querySelector('input[name="mode"]:checked') || {}).value || 'beautify';
+    (document.querySelector('input[name="mode"]:checked') || {}).value || 'portrait';
 
   const state = {
     file: null,
@@ -33,6 +33,20 @@
     defaultLook: null,
     job: null,       // the last completed job payload, for re-styling
     restyling: false,
+    // Bitmaps the look previews are drawn from. `pickSource` is a square of the photo the user
+    // chose; `baseSource` and `basePreview` are squares and a bounded whole frame of the
+    // ENHANCED, UN-STYLED result — the same image the server renders every look from, so a
+    // preview and the render that replaces it start from identical pixels.
+    pickSource: null,
+    baseSource: null,
+    basePreview: null,
+    // Every look, rendered once in the browser and kept. A click is then an <img> src swap
+    // and nothing else - no canvas work, no request, no wait.
+    previewCache: new Map(),   // look id -> object URL of this photo under that look
+    doneLook: null,     // the look the result view is SHOWING, the instant it is clicked
+    renderedLook: null, // the look the server's current result file actually holds
+    pump: null,         // the in-flight server-render pass, as a promise anyone can await
+    renderNudge: null,  // debounce timer for the server render
   };
 
   // ── view switching ──────────────────────────────────────────────────
@@ -80,14 +94,22 @@
       state.looks = payload.data.filters || [];
       state.defaultLook = payload.data.default;
       state.look = state.defaultLook;
-      renderChips($('looks-chips'), pickLook, state.look);
+      // Build every look's colour table now, before anyone can click one. The tables are 768
+      // bytes each; the point is not the microseconds saved but that the FIRST pick is as fast
+      // as the tenth, which is the whole difference between "instant" and "usually instant".
+      if (window.Looks) window.Looks.preload(state.looks);
+      renderChips($('looks-chips'), pickLook, state.look, state.pickSource);
       $('looks-pick').hidden = state.looks.length === 0;
     } catch {
       // No catalogue: the picker stays hidden and the server applies its own default.
     }
   }
 
-  function renderChips(host, onPick, selected) {
+  // `source`, when present, is a small square bitmap of the user's own photo (see Looks.
+  // squareCrop). Each chip then shows that square with its own look already on it, rendered
+  // here in the browser — so the strip answers "what will this one do to MY face" instead of
+  // "what is this one called", and it answers it before the first click rather than after it.
+  function renderChips(host, onPick, selected, source) {
     host.innerHTML = '';
     for (const look of state.looks) {
       const chip = document.createElement('button');
@@ -97,12 +119,48 @@
       chip.setAttribute('aria-checked', String(look.id === selected));
       chip.title = look.description;
       chip.innerHTML =
-        `<span class="chip-name"></span><span class="chip-tag"></span>`;
+        `<span class="chip-thumb" aria-hidden="true"></span>` +
+        `<span class="chip-text"><span class="chip-name"></span><span class="chip-tag"></span></span>`;
       chip.querySelector('.chip-name').textContent = look.name;
       chip.querySelector('.chip-tag').textContent =
         look.id === 'none' ? 'no filter' : (look.id === state.defaultLook ? 'default' : '');
       chip.addEventListener('click', () => onPick(look.id));
       host.appendChild(chip);
+    }
+    if (source) paintSwatches(host, source);
+  }
+
+  // Painted after the chips are in the document, one animation frame at a time. Thirteen 104 px
+  // squares is a few milliseconds of work in total, but doing it in one synchronous burst is a
+  // few milliseconds during which the click that opened this panel has not finished — and that
+  // is exactly the moment the interface is being judged for responsiveness.
+  function paintSwatches(host, source) {
+    if (!window.Looks) return;
+    const chips = [...host.children];
+    let i = 0;
+    const step = () => {
+      if (i >= chips.length || !host.isConnected) return;
+      const look = state.looks[i], chip = chips[i];
+      i++;
+      try {
+        const slot = chip && chip.querySelector('.chip-thumb');
+        if (slot && look) {
+          slot.appendChild(window.Looks.paint(source, look));
+          chip.classList.add('with-thumb');
+        }
+      } catch { /* a swatch is a nicety; the chip works without one */ }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // One square of the photo, at swatch resolution, shared by all thirteen renders.
+  function buildSource(img, boxes) {
+    if (!window.Looks) return null;
+    try {
+      return window.Looks.squareCrop(img, 104, boxes);
+    } catch {
+      return null;   // a tainted or undecodable canvas: fall back to text-only chips
     }
   }
 
@@ -116,34 +174,193 @@
     markSelected($('looks-chips'), id);
   }
 
-  // In the result view a look change is a server round-trip, but a cheap one: it re-renders
-  // from the un-styled image the job kept, so nothing is analysed or restored a second time.
-  async function pickDoneLook(id) {
-    if (state.restyling || !state.job) return;
-    const block = $('looks-done');
-    const previous = state.job.look;
-    const jobId = state.job.jobId;
-    state.restyling = true;
-    block.classList.add('busy');
+  // ── changing the look, without the wait ─────────────────────────────
+  //
+  // A look change has to feel like a filter, not like submitting a job. Three things make that
+  // true and all three matter:
+  //
+  //   1. EVERY look is rendered up front, in the browser, from the un-styled base the job kept
+  //      (`prerenderLooks`). By the time anyone reaches for the strip the pictures already
+  //      exist, so a click is an <img> src swap - no canvas work, no request, no wait.
+  //   2. The chips are NEVER disabled. The old version locked the whole strip for the length of
+  //      the server round trip, which is 1.2 to 1.6 seconds of real work plus polling; so the
+  //      second click of a comparison - the one that decides it - did nothing at all for about
+  //      two seconds. That lock, not the rendering, was what made this feel slow.
+  //   3. The server render still happens, because the browser only draws the frame-wide half of
+  //      a look and the file you download has to be the whole thing. It just happens BEHIND the
+  //      picture, for whichever look you settled on, and swaps itself in when it arrives.
+  function pickDoneLook(id) {
+    if (!state.job || id === state.doneLook) return;
+    state.doneLook = id;
     markSelected($('looks-done-chips'), id);
+    showLook(id);
+    nudgeRender();
+  }
+
+  // Put a look on screen NOW: the server's own render when we already have that one, the
+  // browser's cached preview otherwise, and - only if it has not been cached yet - a render on
+  // the spot, which is about a sixth of a second rather than the two seconds a round trip costs.
+  function showLook(id) {
+    if (state.job && id === state.renderedLook) return showImage(state.job.resultUrl);
+    const cached = state.previewCache.get(id);
+    if (cached) return showImage(cached);
+    renderPreview(id).then((url) => {
+      if (url && state.doneLook === id) showImage(url);
+    });
+  }
+
+  function showImage(src) {
+    const after = $('img-after');
+    after.onload = null;
+    after.onerror = null;
+    after.src = src;
+  }
+
+  // One look, painted from the un-styled base and kept as an object URL.
+  function renderPreview(id) {
+    const hit = state.previewCache.get(id);
+    if (hit) return Promise.resolve(hit);
+    const look = state.looks.find((l) => l.id === id);
+    if (!look || !state.basePreview || !window.Looks) return Promise.resolve(null);
+    let canvas;
     try {
-      const body = new FormData();
-      body.append('filter', id);
-      const res = await fetch(`/api/jobs/${jobId}/filter`, { method: 'POST', body });
-      const payload = await res.json();
-      const job = (res.ok && payload.success) ? await waitForJob(jobId) : null;
-      // The user may have moved on while this was in flight; if they have, the result of a
-      // job they are no longer looking at must not be painted over whatever is on screen now.
-      if (state.job && state.job.jobId !== jobId) return;
-      if (job) applyResult(job);
-      else markSelected($('looks-done-chips'), previous);
+      canvas = window.Looks.paint(state.basePreview, look);
     } catch {
-      markSelected($('looks-done-chips'), previous);
+      return Promise.resolve(null);
+    }
+    return window.Looks.toBlobUrl(canvas).then((url) => {
+      if (url) state.previewCache.set(id, url);
+      return url;
+    });
+  }
+
+  // Fill the cache in the background while the result is being looked at. One look per idle
+  // slice, so nothing janks, and whatever is currently selected is always taken first.
+  function prerenderLooks() {
+    if (!state.basePreview || !window.Looks) return;
+    const queue = state.looks.map((l) => l.id).filter((id) => !state.previewCache.has(id));
+    const idle = window.requestIdleCallback
+      ? (fn) => window.requestIdleCallback(fn, { timeout: 500 })
+      : (fn) => setTimeout(fn, 16);
+    const step = () => {
+      if (!queue.length || !state.job) return;
+      const i = queue.indexOf(state.doneLook);
+      const id = queue.splice(i >= 0 ? i : 0, 1)[0];
+      renderPreview(id).then(() => idle(step));
+    };
+    idle(step);
+  }
+
+  // ── the server render, behind the picture ───────────────────────────
+  // Debounced, so browsing the strip does not queue thirteen renders on a server that does one
+  // at a time.
+  function nudgeRender() {
+    clearTimeout(state.renderNudge);
+    state.renderNudge = setTimeout(pumpRender, 400);
+  }
+
+  // Serialised, and it re-reads the selection every time round: a look picked while the previous
+  // render was in flight is taken up next, and the ones clicked past in between are skipped
+  // rather than queued. So the server renders what you settled on, not everything you touched.
+  // Returns the IN-FLIGHT pass when there already is one, rather than returning immediately.
+  // That distinction is the whole correctness of the Download button: it awaits this, and the
+  // version that bailed out early handed back an already-resolved promise while the render it
+  // was supposed to be waiting for was still running - so the click did nothing at all,
+  // silently, in exactly the window where someone is most likely to press it.
+  function pumpRender() {
+    if (!state.job) return Promise.resolve();
+    if (!state.pump) state.pump = runPump().finally(() => { state.pump = null; });
+    return state.pump;
+  }
+
+  async function runPump() {
+    setSyncing(true);
+    try {
+      while (state.job && state.doneLook && state.doneLook !== state.renderedLook) {
+        if (!(await serverRender(state.doneLook))) break;
+      }
     } finally {
-      state.restyling = false;
-      block.classList.remove('busy');
+      setSyncing(false);
     }
   }
+
+  async function serverRender(want) {
+    const jobId = state.job.jobId;
+    try {
+      const body = new FormData();
+      body.append('filter', want);
+      const res = await fetch(`/api/jobs/${jobId}/filter`, { method: 'POST', body });
+      const payload = await res.json();
+      if (!res.ok || !payload.success) return false;
+      const job = await waitForJob(jobId);
+      // The user may have started a different photo entirely while this was in flight.
+      if (!job || !state.job || state.job.jobId !== jobId) return false;
+      adoptJob(job);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // A finished render. Always becomes what the Download button points at; goes on screen only
+  // if it is still the look being looked at, because a render the user has already clicked past
+  // must not paint over the one they are on.
+  function adoptJob(job) {
+    state.job = job;
+    state.renderedLook = job.look;
+    renderStats(job);
+    setDownload(job);
+    if (state.doneLook === job.look) showImage(job.resultUrl);
+  }
+
+  function setDownload(job) {
+    const dl = $('btn-download');
+    dl.href = job.resultUrl;
+    const stem = (state.file?.name || 'image').replace(/\.[^.]+$/, '');
+    const ext = (job.output?.format || 'image/jpeg').split('/')[1].replace('jpeg', 'jpg');
+    dl.setAttribute('download', `${stem}-beautified.${ext}`);
+  }
+
+  function setSyncing(on) {
+    const note = $('looks-done-note');
+    if (!note) return;
+    if (on) {
+      if (!note.dataset.idleText) note.dataset.idleText = note.textContent;
+      note.textContent = 'Preview shown \u2014 finishing the full-quality version\u2026';
+    } else if (note.dataset.idleText) {
+      note.textContent = note.dataset.idleText;
+    }
+  }
+
+  // What is on screen may be the browser's preview while the server's own render is still
+  // coming. The preview is the frame-wide half of the look only - the skin, lips and eyes are
+  // the server's half - so the file that leaves has to be the real render, even if that means
+  // waiting a moment for it. Waiting HERE is the right place: it is the one click where a
+  // second of delay buys something the user actually receives.
+  const DOWNLOAD_LABEL = $('btn-download').textContent;
+
+  $('btn-download').addEventListener('click', async (e) => {
+    if (!state.job || state.renderedLook === state.doneLook) return;   // already the real thing
+    e.preventDefault();
+    const dl = $('btn-download');
+    dl.textContent = 'Preparing\u2026';
+    dl.classList.add('waiting');
+    clearTimeout(state.renderNudge);      // do not sit through the debounce as well
+    await pumpRender();
+    dl.classList.remove('waiting');
+    dl.textContent = DOWNLOAD_LABEL;
+    if (state.renderedLook === state.doneLook) {
+      dl.click();          // re-entry is harmless: the guard above lets it straight through
+    } else {
+      // Say so rather than doing nothing. Handing over the previous look's file because this
+      // one would not render is the one outcome worse than a click that failed.
+      const note = $('looks-done-note');
+      if (note) {
+        note.textContent = 'That look could not be prepared \u2014 try it again.';
+        setTimeout(() => setSyncing(false), 4000);
+      }
+    }
+  });
 
   // Poll until the re-style finishes. It is far cheaper than a full run, but it still goes
   // through the same one-at-a-time queue, so it can be waiting behind somebody's photo.
@@ -182,6 +399,11 @@
     const img = new Image();
     img.onload = () => {
       $('file-meta').textContent = `${img.naturalWidth} × ${img.naturalHeight} · ${fmtBytes(file.size)}`;
+      // The swatches for the "what finish do you want" strip come from the photo in front of
+      // the user, not from a stock face. There is no face box yet — nothing has looked at the
+      // photo — so the crop falls back to the upper middle of the frame.
+      state.pickSource = buildSource(img, null);
+      if (state.looks.length) renderChips($('looks-chips'), pickLook, state.look, state.pickSource);
     };
     img.src = state.objectUrl;
     $('file-meta').textContent = fmtBytes(file.size);
@@ -223,7 +445,8 @@
   // Keep the action button honest about what it is going to do.
   document.querySelectorAll('input[name="mode"]').forEach((radio) =>
     radio.addEventListener('change', () => {
-      $('btn-enhance').textContent = selectedMode() === 'clear' ? 'Clear image' : 'Beautify';
+      $('btn-enhance').textContent =
+        ({ clear: 'Clear image', portrait: 'Enhance photo' })[selectedMode()] || 'Beautify';
     }));
 
   // ── enhancing ───────────────────────────────────────────────────────
@@ -314,6 +537,7 @@
       deblock: 'Cleaning compression…',
       chroma: 'Cleaning colour noise…',
       denoise: 'Removing grain…',
+      blemish: 'Clearing blemishes…',
       face_clarity: 'Refining faces…',
       body_clarity: 'Refining detail…',
       hair: 'Refining hair…',
@@ -346,25 +570,60 @@
       // the look would mean re-running the whole pipeline, so it is not offered.
       const canRestyle = job.details?.canRestyle && state.looks.length > 0;
       $('looks-done').hidden = !canRestyle;
-      if (canRestyle) renderChips($('looks-done-chips'), pickDoneLook, job.look);
+      if (canRestyle) renderChips($('looks-done-chips'), pickDoneLook, state.doneLook, state.baseSource);
       show('done');
+      if (canRestyle) prepareBase(job);
     });
+  }
+
+  // Fetch the un-styled enhanced image once, and keep two bitmaps cut from it: a square for the
+  // swatches and a bounded whole frame for the instant preview.
+  //
+  // It has to be the BASE and not the result on screen. The result already carries a look, so
+  // previewing another one on top of it would show Amber-then-Aura — a grade nobody will ever be
+  // sent — and every swatch in the strip would drift further from the truth the more the user
+  // explored. The base is the exact image the server renders each look from.
+  async function prepareBase(job) {
+    const url = job.details?.baseUrl;
+    if (!url || !window.Looks) return;
+    const jobId = job.jobId;
+    try {
+      const img = await window.Looks.loadImage(url);
+      if (!state.job || state.job.jobId !== jobId) return;   // the user moved on
+      state.baseSource = buildSource(img, job.details?.faceBoxes);
+      // 900 px on the long side. The compare box is never wider than about 900 CSS pixels, and
+      // this size is rendered thirteen times over in the background - measured at roughly 135 ms
+      // each in Chromium against 230 ms at 1400, which is the difference between filling the
+      // cache during one glance at the result and still filling it during the next.
+      state.basePreview = window.Looks.fitted(img, 900);
+      prerenderLooks();
+      if (state.baseSource && !$('looks-done').hidden) {
+        // `doneLook` and not `job.look`: the user may well have picked something else during
+        // the second this took to load, and re-checking the old chip under them would be a
+        // small lie about what they are looking at.
+        renderChips($('looks-done-chips'), pickDoneLook, state.doneLook, state.baseSource);
+      }
+    } catch {
+      // No base, no swatches and no instant preview — every look still works, it just costs the
+      // round trip it always did.
+    }
   }
 
   // Point the comparison and the download button at whatever the job's current result is.
   // `resultUrl` carries a version, so a re-styled image is a new address and the browser
   // fetches it instead of showing the one it already has.
+  // The FIRST result only. It waits for the image to decode before the panel is revealed, so
+  // the done view never appears with an empty frame in it. Every look change after this goes
+  // through `pickDoneLook`, which must not wait for anything.
   function applyResult(job, then) {
     state.job = job;
+    state.doneLook = job.look;
+    state.renderedLook = job.look;
     const after = $('img-after');
     after.onload = () => {
       setSplit(50);
       renderStats(job);
-      const dl = $('btn-download');
-      dl.href = job.resultUrl;
-      const stem = (state.file?.name || 'image').replace(/\.[^.]+$/, '');
-      const ext = (job.output?.format || 'image/jpeg').split('/')[1].replace('jpeg', 'jpg');
-      dl.setAttribute('download', `${stem}-beautified.${ext}`);
+      setDownload(job);
       if (then) then();
     };
     after.onerror = () => fail('Could not load the result', 'The enhanced image could not be fetched.');
@@ -378,7 +637,8 @@
     const chips = [];
 
     if (i.width && o.width) chips.push(`<span class="stat"><b>${i.width}×${i.height}</b> → <b>${o.width}×${o.height}</b></span>`);
-    if (job.mode) chips.push(`<span class="stat">${job.mode === 'clear' ? 'Cleared' : 'Beautified'}</span>`);
+    if (job.mode) chips.push(`<span class="stat">${
+      ({ clear: 'Cleared', portrait: 'Portrait' })[job.mode] || 'Beautified'}</span>`);
     const look = state.looks.find((l) => l.id === job.look);
     if (look && look.id !== 'none') chips.push(`<span class="stat"><b>${look.name}</b></span>`);
     if (d.chunked) chips.push(`<span class="stat">processed in chunks</span>`);
@@ -396,10 +656,19 @@
 
   function reset() {
     clearInterval(state.polling);
+    clearTimeout(state.renderNudge);
+    for (const url of state.previewCache.values()) URL.revokeObjectURL(url);
+    state.previewCache.clear();
+    state.renderedLook = null;
     state.jobId = null;
     state.job = null;
     state.file = null;
     state.look = state.defaultLook;
+    state.doneLook = null;
+    state.pickSource = null;
+    state.baseSource = null;
+    state.basePreview = null;
+    setSyncing(false);
     if (state.looks.length) renderChips($('looks-chips'), pickLook, state.look);
     fileInput.value = '';
     if (state.objectUrl) { URL.revokeObjectURL(state.objectUrl); state.objectUrl = null; }
