@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     APP_ENV: str = "development"
+    # The origin this site is reached at, e.g. https://khushify.ai - used only to make the
+    # social-card tags absolute, which Open Graph requires. Left empty, the origin is taken
+    # from each request instead, which is right for an IP-addressed box and for a domain
+    # alike; set it when something in front of the app rewrites Host.
+    PUBLIC_BASE_URL: str = ""
     HOST: str = "127.0.0.1"
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"

@@ -190,6 +190,42 @@ sudo systemctl restart caddy
 
 Caddy obtains and renews the certificate automatically.
 
+## Link previews (WhatsApp, Slack, iMessage, X)
+
+The share card is generated from the site's own logo and lives at
+`/static/assets/khushify-ai-card.jpg` - 1200x630, JPEG, 50 KB. Three properties of it are load
+bearing, and getting any of them wrong is what produces a preview with a broken image:
+
+* **Absolute URL.** Open Graph does not accept a relative `og:image`; unfurlers drop it silently.
+  The app fills the origin in per request, so it is correct on an IP and on a domain without
+  anything being edited. Set `PUBLIC_BASE_URL` only if something in front of the app rewrites
+  `Host` in a way the `X-Forwarded-*` headers do not describe.
+* **JPEG, not WebP.** WhatsApp's and Facebook's crawlers do not render WebP previews at all.
+* **No transparency.** A transparent logo is flattened against the client's own theme, so dark
+  artwork lands on a dark card.
+
+Check what a crawler actually receives:
+
+```bash
+curl -s localhost/ | grep -E 'og:image"|og:url'
+curl -s -o /dev/null -w '%{http_code} %{content_type} %{size_download}\n' \
+  localhost/static/assets/khushify-ai-card.jpg      # 200 image/jpeg ~50000
+```
+
+**Previews are cached hard, per platform.** After deploying this, a link that was already shared
+will keep showing the old broken card for a long time - that is the platform's cache, not your
+server. To see the new one:
+
+* **WhatsApp** - share the URL with a throwaway query string, `http://<host>/?v=2`. WhatsApp keys
+  its cache on the exact URL.
+* **Facebook and WhatsApp together** - force a re-scrape at
+  <https://developers.facebook.com/tools/debug/> (WhatsApp reuses Facebook's crawler cache).
+* **Slack / LinkedIn / X** - each has its own inspector; the query-string trick works everywhere.
+
+One caveat you cannot fix with tags: several platforms - **X most strictly** - will not unfurl a
+bare IP over plain HTTP at all. WhatsApp and Slack will. For previews everywhere, put a domain
+and HTTPS in front of it, which is the *Custom domain* section directly above.
+
 ## Pulling new code onto a running instance
 
 The login user depends on the AMI: `ec2-user` on Amazon Linux, `ubuntu` on Ubuntu. Or use
@@ -351,6 +387,7 @@ Elastic IP — an unattached Elastic IP is billed on its own.
 | `MAX_QUEUED_JOBS` | `64` | How many people can be waiting before uploads are refused |
 | `JOB_TIMEOUT_SECONDS_PER_MEGAPIXEL` | `90` | Raise it if a slow instance times out on big photos |
 | `KEEP_UNFILTERED_BASE` | `true` | Set `false` to trade instant filter switching for disk |
+| `PUBLIC_BASE_URL` | *(empty)* | Origin used in the share-card tags. Empty = taken from the request, which is right almost always |
 
 Do **not** add uvicorn workers: each loads its own ~960 MB copy of the models. Do not raise
 `WORKER_CONCURRENCY` either — one heavy job at a time is what keeps the box alive under load,

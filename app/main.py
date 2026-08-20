@@ -22,7 +22,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 
 from .config import BUILD_ID, ROOT, get_settings
@@ -368,9 +369,46 @@ def _safe_remove(path: str | None) -> None:
 if os.path.isdir(WEB_DIR):
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+    _index_cache: dict = {}
+
+    def _index_html() -> str:
+        """index.html, re-read whenever it changes on disk.
+
+        Keyed on mtime rather than cached once, because `web/` being live is a property this
+        project leans on: editing the page and refreshing has to work without a restart.
+        """
+        path = os.path.join(WEB_DIR, "index.html")
+        mtime = os.path.getmtime(path)
+        if _index_cache.get("mtime") != mtime:
+            with open(path, encoding="utf-8") as fh:
+                _index_cache.update(mtime=mtime, html=fh.read())
+        return _index_cache["html"]
+
+    def _public_base(request: Request) -> str:
+        """The absolute origin to advertise in the social-card tags.
+
+        Open Graph will not accept a relative image URL - that is exactly why a shared link came
+        back with a broken preview - and this app answers on a bare IP today and on a domain
+        tomorrow, so the value cannot be baked into the HTML.
+
+        PUBLIC_BASE_URL wins when set. Otherwise it is reconstructed from the request, honouring
+        the X-Forwarded-* headers a reverse proxy sets, so a site fronted by Caddy advertises the
+        https it is served over rather than the http it is proxied on. Each header is comma-split
+        because a chain of proxies appends to them rather than replacing them.
+        """
+        configured = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+        if configured:
+            return configured
+        def first(value: str) -> str:
+            return value.split(",")[0].strip()
+        proto = first(request.headers.get("x-forwarded-proto") or request.url.scheme)
+        host = first(request.headers.get("x-forwarded-host")
+                     or request.headers.get("host") or request.url.netloc)
+        return f"{proto}://{host}"
+
     @app.get("/", include_in_schema=False)
-    def index():
-        return FileResponse(os.path.join(WEB_DIR, "index.html"))
+    def index(request: Request):
+        return HTMLResponse(_index_html().replace("{{BASE_URL}}", _public_base(request)))
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
